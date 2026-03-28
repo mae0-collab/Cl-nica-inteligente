@@ -153,7 +153,8 @@ export const ConsultationRequestSchema = z.object({
 // LAB ANALYSIS
 // -------------------------------------------------------
 
-export const labAnalysisSchema = z.object({
+// Base object (extends-friendly — sem .refine())
+export const labAnalysisBaseSchema = z.object({
   labs: z.object({
     ferritin:  z.number().optional(),
     b12:       z.number().optional(),
@@ -162,7 +163,10 @@ export const labAnalysisSchema = z.object({
     insulin:   z.number().optional(),
     glucose:   z.number().optional(),
   }),
-}).refine(
+})
+
+// Schema completo com validação de "pelo menos um marcador"
+export const labAnalysisSchema = labAnalysisBaseSchema.refine(
   (data) => Object.values(data.labs).some((v) => v !== undefined),
   {
     message: 'Forneça pelo menos um marcador laboratorial em "labs"',

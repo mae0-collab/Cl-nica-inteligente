@@ -271,6 +271,232 @@ aiRoutes.post('/clinical-report', async (c) => {
 })
 
 // ─────────────────────────────────────────────────────────────
+// POST /api/ai/lab-report  — FLUXO COMPLETO
+// Motor clínico (regras) + Relatório IA em um único endpoint
+// Frontend envia os labs → backend interpreta + gera relatório
+// ─────────────────────────────────────────────────────────────
+
+import { labAnalysisBaseSchema } from '../validators/schemas'
+
+// Schema estendido: labs + metadados opcionais
+// Usa labAnalysisBaseSchema (ZodObject) para poder chamar .extend()
+// A validação de "pelo menos um marcador" é feita na própria rota
+const LabReportSchema = labAnalysisBaseSchema.extend({
+  patientName: z.string().min(1).max(120).optional(),
+  mode:        z.enum(['clinical', 'patient']).default('clinical'),
+})
+
+aiRoutes.post('/lab-report', async (c) => {
+  const professionalId = getAuthProfessionalId(c)
+  const { DB, OPENAI_API_KEY, OPENAI_MODEL } = c.env
+
+  const body = await c.req.json().catch(() => null)
+  if (!body) return c.json({ success: false, error: 'Corpo da requisição inválido' }, 400)
+
+  const validation = validateBody(LabReportSchema, body)
+  if (!validation.success) {
+    return c.json({ success: false, error: 'Dados inválidos', details: validation.errors }, 400)
+  }
+
+  const { labs, patientName, mode } = validation.data
+
+  // Garantir que ao menos um marcador foi fornecido
+  const hasAnyMarker = Object.values(labs).some(v => v !== undefined)
+  if (!hasAnyMarker) {
+    return c.json({ success: false, error: 'Dados inválidos', details: { labs: ['Forneça pelo menos um marcador laboratorial em "labs"'] } }, 400)
+  }
+
+  // ── Passo 1: Motor de regras clínicas ──────────────────────
+  const { findings: rawFindings, suggestions } = evaluateClinicalMarkers(labs)
+
+  const individual    = rawFindings.filter(f => !f.marker.startsWith('Alerta'))
+  const combos        = rawFindings.filter(f =>  f.marker.startsWith('Alerta'))
+  const abnormal      = individual.filter(f => f.status !== 'ok')
+  const healthScore   = individual.length > 0
+    ? Math.round(((individual.length - abnormal.length) / individual.length) * 100)
+    : 100
+
+  // Converter achados para strings para o relatório de IA
+  const findingStrings = [
+    ...individual.filter(f => f.status !== 'ok').map(
+      f => `${f.marker} (${f.status}): ${f.message}`
+    ),
+    ...combos.map(f => `⚠ ${f.marker}: ${f.message}`),
+  ]
+
+  const suggestionStrings = suggestions
+    .filter(s => s.priority === 'high' || s.priority === 'medium')
+    .map(s => `[${s.category}] ${s.title}: ${s.detail}`)
+
+  // ── Passo 2: Relatório de IA ────────────────────────────────
+  const model      = OPENAI_MODEL ?? 'gpt-4o'
+  const startTime  = Date.now()
+  let report: ClinicalReportOutput
+  let generatedBy: 'openai' | 'local' = 'local'
+  let tokensUsed = 0
+
+  if (OPENAI_API_KEY && findingStrings.length > 0) {
+    try {
+      const client      = createOpenAIClient(OPENAI_API_KEY)
+      const userContent = JSON.stringify({
+        generatedByUserId: professionalId,
+        patientName:       patientName ?? null,
+        labs,
+        healthScore,
+        findings:    findingStrings,
+        suggestions: suggestionStrings,
+        instruction:
+          mode === 'patient'
+            ? 'Gere explicação para o paciente em linguagem acessível.'
+            : 'Gere relatório clínico técnico para o profissional de saúde.',
+      })
+
+      const response = await client.responses.create({
+        model,
+        store: false,
+        input: [
+          { role: 'system', content: [{ type: 'input_text', text: buildSystemPrompt(mode) }] },
+          { role: 'user',   content: [{ type: 'input_text', text: userContent }] },
+        ],
+        text: {
+          format: {
+            type:   'json_schema',
+            name:   'clinical_report',
+            strict: true,
+            schema: CLINICAL_REPORT_JSON_SCHEMA,
+          },
+        },
+      })
+
+      const raw = response.output_text
+      try {
+        report      = JSON.parse(raw) as ClinicalReportOutput
+        generatedBy = 'openai'
+        tokensUsed  = (response as any).usage?.total_tokens ?? 0
+      } catch {
+        report = buildLocalClinicalReport(findingStrings, suggestionStrings, mode)
+      }
+    } catch (err) {
+      console.error('lab-report OpenAI error:', err)
+      report = buildLocalClinicalReport(findingStrings, suggestionStrings, mode)
+    }
+  } else {
+    // Sem achados anormais ou sem API key
+    report = buildLocalClinicalReport(
+      findingStrings.length > 0 ? findingStrings : ['Todos os marcadores dentro da faixa ideal.'],
+      suggestionStrings,
+      mode,
+    )
+  }
+
+  const responseTimeMs = Date.now() - startTime
+
+  // Registrar interação
+  try {
+    const markersAnalyzed = Object.keys(labs)
+      .filter(k => (labs as Record<string, unknown>)[k] !== undefined)
+      .join(', ')
+    await DB.prepare(`
+      INSERT INTO ai_interactions
+        (professional_id, context_type, patient_id, user_prompt, ai_response, tokens_used, response_time_ms)
+      VALUES (?, 'lab_interpretation', NULL, ?, ?, ?, ?)
+    `).bind(
+      professionalId,
+      `Lab report: ${markersAnalyzed}`,
+      JSON.stringify({ health_score: healthScore, generated_by: generatedBy }),
+      tokensUsed,
+      responseTimeMs,
+    ).run()
+  } catch { /* log não bloqueia */ }
+
+  // ── Resposta unificada ──────────────────────────────────────
+  return c.json({
+    success: true,
+    data: {
+      health_score:      healthScore,
+      markers_analyzed:  Object.keys(labs).filter(k => (labs as Record<string, unknown>)[k] !== undefined).length,
+      findings:          individual,
+      combination_alerts: combos,
+      suggestions,
+      ai_report: {
+        ...report,
+        generated_by:     generatedBy,
+        model:            OPENAI_API_KEY ? model : null,
+        response_time_ms: responseTimeMs,
+      },
+    },
+  })
+})
+
+// ─────────────────────────────────────────────────────────────
+// Motor de regras clínicas (inline — mantém ai.ts autossuficiente)
+// Mesmas regras de clinical-intelligence.ts, reutilizadas aqui
+// ─────────────────────────────────────────────────────────────
+
+interface Finding { marker: string; value: number; unit: string; status: string; reference: string; message: string; severity: string }
+interface Suggestion { category: string; title: string; detail: string; priority: 'high' | 'medium' | 'low' }
+
+function evaluateClinicalMarkers(labs: Record<string, number | undefined>): { findings: Finding[]; suggestions: Suggestion[] } {
+  const findings: Finding[]     = []
+  const suggestions: Suggestion[] = []
+  const { ferritin, b12, tsh, vitaminD, insulin, glucose } = labs as Record<string, number | undefined>
+
+  if (ferritin !== undefined) {
+    if (ferritin < 20)       { findings.push({ marker:'Ferritina',value:ferritin,unit:'ng/mL',status:'low',reference:'< 20 = depleção grave',message:'Ferritina criticamente baixa — depleção grave de ferro.',severity:'high' }); suggestions.push({ category:'supplementation',priority:'high',title:'Suplementação de Ferro Urgente',detail:'Ferro quelado 30–60 mg/dia. Solicitar hemograma, investigar causa.' }) }
+    else if (ferritin < 70)  { findings.push({ marker:'Ferritina',value:ferritin,unit:'ng/mL',status:'low',reference:'Ideal: 70–150 ng/mL',message:'Ferritina abaixo do ideal funcional — fadiga, queda capilar.',severity:'medium' }); suggestions.push({ category:'supplementation',priority:'medium',title:'Reposição de Ferro',detail:'Ferro quelado 15–30 mg/dia + vitamina C.' }) }
+    else if (ferritin > 200) { findings.push({ marker:'Ferritina',value:ferritin,unit:'ng/mL',status:'high',reference:'> 200 ng/mL = elevada',message:'Ferritina elevada — inflamação ou sobrecarga de ferro.',severity:'medium' }); suggestions.push({ category:'further_testing',priority:'medium',title:'Investigar Ferritina Elevada',detail:'PCR, saturação de transferrina, função hepática.' }) }
+    else                     { findings.push({ marker:'Ferritina',value:ferritin,unit:'ng/mL',status:'ok',reference:'70–200 ng/mL',message:'Ferritina dentro da faixa funcional ideal.',severity:'low' }) }
+  }
+
+  if (b12 !== undefined) {
+    if (b12 < 300)      { findings.push({ marker:'Vitamina B12',value:b12,unit:'pg/mL',status:'low',reference:'< 300 = deficiência',message:'B12 deficiente — risco neurológico.',severity:'high' }); suggestions.push({ category:'supplementation',priority:'high',title:'Reposição B12 Urgente',detail:'Metilcobalamina sublingual 1.000–5.000 mcg/dia.' }) }
+    else if (b12 < 500) { findings.push({ marker:'Vitamina B12',value:b12,unit:'pg/mL',status:'borderline',reference:'Ideal: ≥ 500 pg/mL',message:'B12 abaixo do ideal funcional — risco neurológico subclínico.',severity:'medium' }); suggestions.push({ category:'supplementation',priority:'medium',title:'Suplementação B12',detail:'Metilcobalamina 500–1.000 mcg/dia.' }) }
+    else                { findings.push({ marker:'Vitamina B12',value:b12,unit:'pg/mL',status:'ok',reference:'≥ 500 pg/mL',message:'B12 na faixa ideal.',severity:'low' }) }
+  }
+
+  if (tsh !== undefined) {
+    if (tsh < 0.4)      { findings.push({ marker:'TSH',value:tsh,unit:'mUI/L',status:'low',reference:'< 0,4 = hipertireoidismo',message:'TSH suprimido — avaliar hipertireoidismo.',severity:'high' }); suggestions.push({ category:'clinical_referral',priority:'high',title:'Encaminhamento Endocrinológico',detail:'T4 livre, T3, anti-TPO urgente.' }) }
+    else if (tsh > 4.0) { findings.push({ marker:'TSH',value:tsh,unit:'mUI/L',status:'high',reference:'> 4,0 = hipotireoidismo',message:'TSH elevado — hipotireoidismo.',severity:'high' }); suggestions.push({ category:'clinical_referral',priority:'high',title:'Avaliação Endocrinológica',detail:'T4 livre, anti-TPO, discutir levotiroxina.' }) }
+    else if (tsh > 2.0) { findings.push({ marker:'TSH',value:tsh,unit:'mUI/L',status:'borderline',reference:'Ideal: 1,0–2,0 mUI/L',message:'TSH acima do ideal funcional — hipotireoidismo subclínico.',severity:'medium' }); suggestions.push({ category:'further_testing',priority:'medium',title:'Investigação Tireoidiana',detail:'T4 livre, T3 livre, anti-TPO, anti-Tg.' }) }
+    else                { findings.push({ marker:'TSH',value:tsh,unit:'mUI/L',status:'ok',reference:'0,4–2,0 mUI/L',message:'TSH dentro da faixa ideal.',severity:'low' }) }
+  }
+
+  if (vitaminD !== undefined) {
+    if (vitaminD < 20)       { findings.push({ marker:'Vitamina D',value:vitaminD,unit:'ng/mL',status:'low',reference:'< 20 = deficiência grave',message:'Vitamina D criticamente baixa.',severity:'high' }); suggestions.push({ category:'supplementation',priority:'high',title:'Reposição Vitamina D3 Urgente',detail:'10.000–50.000 UI/dia + K2-MK7 100–200 mcg/dia.' }) }
+    else if (vitaminD < 40)  { findings.push({ marker:'Vitamina D',value:vitaminD,unit:'ng/mL',status:'low',reference:'Ideal: 60–80 ng/mL',message:'Vitamina D deficiente.',severity:'medium' }); suggestions.push({ category:'supplementation',priority:'medium',title:'Suplementação Vitamina D3',detail:'5.000–10.000 UI/dia + K2-MK7 100 mcg/dia.' }) }
+    else if (vitaminD > 100) { findings.push({ marker:'Vitamina D',value:vitaminD,unit:'ng/mL',status:'high',reference:'> 100 = risco toxicidade',message:'Vitamina D elevada — risco de hipercalcemia.',severity:'medium' }); suggestions.push({ category:'further_testing',priority:'medium',title:'Monitorar Cálcio e PTH',detail:'Suspender/reduzir suplementação, solicitar cálcio e PTH.' }) }
+    else                     { findings.push({ marker:'Vitamina D',value:vitaminD,unit:'ng/mL',status:'ok',reference:'40–100 ng/mL',message:'Vitamina D adequada.',severity:'low' }) }
+  }
+
+  if (insulin !== undefined) {
+    if (insulin > 15)    { findings.push({ marker:'Insulina de Jejum',value:insulin,unit:'mUI/L',status:'high',reference:'> 15 = resistência',message:'Resistência à insulina confirmada.',severity:'high' }); suggestions.push({ category:'lifestyle',priority:'high',title:'Intervenção no Estilo de Vida',detail:'Reduzir carboidratos refinados, exercícios de resistência 3–4x/semana.' }); suggestions.push({ category:'supplementation',priority:'high',title:'Sensibilizadores de Insulina',detail:'Berberina 500 mg 2x/dia ou Inositol 4g/dia.' }) }
+    else if (insulin > 7){ findings.push({ marker:'Insulina de Jejum',value:insulin,unit:'mUI/L',status:'borderline',reference:'Ideal: < 7 mUI/L',message:'Insulina acima do ideal — início de resistência.',severity:'medium' }); suggestions.push({ category:'lifestyle',priority:'medium',title:'Ajuste Alimentar',detail:'Reduzir índice glicêmico, caminhar após refeições.' }) }
+    else                 { findings.push({ marker:'Insulina de Jejum',value:insulin,unit:'mUI/L',status:'ok',reference:'< 7 mUI/L',message:'Insulina dentro da faixa ideal.',severity:'low' }) }
+  }
+
+  if (glucose !== undefined) {
+    if (glucose >= 126)      { findings.push({ marker:'Glicose de Jejum',value:glucose,unit:'mg/dL',status:'high',reference:'≥ 126 = DM',message:'Glicose no critério diagnóstico de diabetes.',severity:'high' }); suggestions.push({ category:'clinical_referral',priority:'high',title:'Avaliação Médica Urgente',detail:'Confirmar com segunda dosagem ou TTGO. Solicitar HbA1c.' }) }
+    else if (glucose >= 100) { findings.push({ marker:'Glicose de Jejum',value:glucose,unit:'mg/dL',status:'borderline',reference:'100–125 = pré-diabetes',message:'Glicose na faixa de pré-diabetes.',severity:'high' }); suggestions.push({ category:'lifestyle',priority:'high',title:'Reversão de Pré-Diabetes',detail:'Perda 7–10% do peso, dieta IG baixo, exercício 150 min/semana.' }) }
+    else if (glucose >= 90)  { findings.push({ marker:'Glicose de Jejum',value:glucose,unit:'mg/dL',status:'borderline',reference:'Ideal: < 90 mg/dL',message:'Glicose levemente acima do ideal funcional.',severity:'low' }); suggestions.push({ category:'nutrition',priority:'low',title:'Ajuste Dietético',detail:'Reduzir açúcar adicionado e farinhas refinadas.' }) }
+    else                     { findings.push({ marker:'Glicose de Jejum',value:glucose,unit:'mg/dL',status:'ok',reference:'70–89 mg/dL',message:'Glicose dentro da faixa ideal.',severity:'low' }) }
+  }
+
+  // Regras combinadas
+  if (ferritin !== undefined && ferritin < 70 && b12 !== undefined && b12 < 500) {
+    findings.push({ marker:'Alerta Combinado: Ferritina + B12',value:0,unit:'',status:'low',reference:'Ambos abaixo do ideal',message:'Possível má absorção intestinal — investigar.',severity:'high' })
+    suggestions.push({ category:'further_testing',priority:'high',title:'Investigação de Má Absorção',detail:'Anti-transglutaminase IgA, calprotectina fecal, H. pylori, pepsinogênio.' })
+  }
+  if (insulin !== undefined && insulin > 7 && glucose !== undefined && glucose >= 100) {
+    findings.push({ marker:'Alerta Combinado: Insulina + Glicose',value:0,unit:'',status:'high',reference:'Síndrome metabólica',message:'Insulina elevada + glicose ≥ 100 — padrão de síndrome metabólica.',severity:'high' })
+    suggestions.push({ category:'lifestyle',priority:'high',title:'Intervenção Metabólica Intensiva',detail:'Restrição de carboidratos processados, jejum intermitente supervisionado, exercício.' })
+  }
+
+  const order = { high: 0, medium: 1, low: 2 } as Record<string, number>
+  suggestions.sort((a, b) => order[a.priority] - order[b.priority])
+  return { findings, suggestions }
+}
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/ai/chat  — chat livre (mantido, com fallback para mock)
 // ─────────────────────────────────────────────────────────────
 

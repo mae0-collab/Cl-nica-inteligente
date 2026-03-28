@@ -434,7 +434,7 @@ function buildDashboardPage(): string {
         <a onclick="showView('protocols'); loadProtocols()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-protocols">
           <i class="fas fa-file-medical mr-3"></i>Protocolos
         </a>
-        <a onclick="showView('ai')" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-ai">
+        <a onclick="showView('ai'); AIReport.renderPanel()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-ai">
           <i class="fas fa-robot mr-3"></i>Assistente IA
         </a>
         <a href="/marketplace" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer">
@@ -504,7 +504,7 @@ function buildDashboardPage(): string {
               <i class="fas fa-stethoscope text-3xl text-purple-600 mb-2 block"></i>
               <p class="font-semibold">Casos Clínicos</p>
             </button>
-            <button onclick="showView('ai')" class="p-4 border-2 border-purple-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition text-center">
+            <button onclick="showView('ai'); AIReport.renderPanel()" class="p-4 border-2 border-purple-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition text-center">
               <i class="fas fa-robot text-3xl text-purple-600 mb-2 block"></i>
               <p class="font-semibold">Assistente IA</p>
             </button>
@@ -551,31 +551,54 @@ function buildDashboardPage(): string {
 
       <!-- AI View -->
       <div id="view-ai" class="view-section p-6 hidden">
-        <div class="max-w-3xl mx-auto">
-          <h3 class="text-xl font-bold mb-4">Assistente IA</h3>
-          <div id="ai-mode-banner" class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm text-yellow-800 hidden">
-            <i class="fas fa-info-circle mr-2"></i>Modo demonstração ativo. Configure OPENAI_API_KEY para respostas reais.
-          </div>
-          <div id="ai-chat" class="bg-white rounded-lg shadow p-4 h-96 overflow-y-auto mb-4 flex flex-col gap-3">
-            <div class="bg-purple-50 rounded-lg p-3 text-sm">
-              <strong>IA:</strong> Olá! Sou o assistente clínico. Como posso ajudar com suas dúvidas sobre saúde integrativa?
-            </div>
-          </div>
-          <div class="flex gap-2">
-            <select id="ai-context" class="border border-gray-300 rounded-lg px-3 py-2 text-sm">
-              <option value="general_question">Pergunta geral</option>
-              <option value="case_analysis">Análise de caso</option>
-              <option value="lab_interpretation">Interpretação de exames</option>
-              <option value="protocol_suggestion">Sugestão de protocolo</option>
-              <option value="supplement_recommendation">Suplementação</option>
-            </select>
-            <input type="text" id="ai-input" placeholder="Digite sua pergunta clínica..."
-              class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
-            <button onclick="sendAIMessage()" id="ai-send-btn"
-              class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700">
-              <i class="fas fa-paper-plane"></i>
+        <div class="max-w-4xl mx-auto space-y-6">
+          <h3 class="text-xl font-bold">Assistente IA</h3>
+
+          <!-- Tabs de navegação -->
+          <div class="flex gap-2 border-b border-gray-200">
+            <button id="ai-tab-lab" onclick="switchAITab('lab')"
+              class="px-4 py-2 text-sm font-semibold text-purple-700 border-b-2 border-purple-600 -mb-px">
+              <i class="fas fa-flask mr-1"></i>Análise Laboratorial
+            </button>
+            <button id="ai-tab-chat" onclick="switchAITab('chat')"
+              class="px-4 py-2 text-sm font-semibold text-gray-500 border-b-2 border-transparent -mb-px hover:text-purple-600">
+              <i class="fas fa-comments mr-1"></i>Chat Livre
             </button>
           </div>
+
+          <!-- Painel: Análise Laboratorial com IA -->
+          <div id="ai-panel-lab">
+            <div id="ai-mode-banner" class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm text-yellow-800 hidden">
+              <i class="fas fa-info-circle mr-2"></i>Modo demonstração ativo. Configure OPENAI_API_KEY para relatórios com IA real.
+            </div>
+            <!-- O painel é injetado aqui pelo AIReport.renderPanel() -->
+            <div id="ai-lab-panel"></div>
+          </div>
+
+          <!-- Painel: Chat Livre -->
+          <div id="ai-panel-chat" class="hidden">
+            <div id="ai-chat" class="bg-white rounded-lg shadow p-4 h-96 overflow-y-auto mb-4 flex flex-col gap-3">
+              <div class="bg-purple-50 rounded-lg p-3 text-sm">
+                <strong>IA:</strong> Olá! Sou o assistente clínico. Como posso ajudar com suas dúvidas sobre saúde integrativa?
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <select id="ai-context" class="border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <option value="general_question">Pergunta geral</option>
+                <option value="case_analysis">Análise de caso</option>
+                <option value="lab_interpretation">Interpretação de exames</option>
+                <option value="protocol_suggestion">Sugestão de protocolo</option>
+                <option value="supplement_recommendation">Suplementação</option>
+              </select>
+              <input type="text" id="ai-input" placeholder="Digite sua pergunta clínica..."
+                class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+              <button onclick="sendAIMessage()" id="ai-send-btn"
+                class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700">
+                <i class="fas fa-paper-plane"></i>
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
