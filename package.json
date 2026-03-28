@@ -1,0 +1,32 @@
+{
+  "name": "clinica-inteligente",
+  "type": "module",
+  "version": "2.0.0",
+  "scripts": {
+    "dev": "wrangler pages dev dist --d1=clinica-inteligente-production --local --ip 0.0.0.0 --port 3000",
+    "dev:vite": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist",
+    "deploy": "npm run build && wrangler pages deploy dist --project-name clinica-inteligente",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:migrate:local": "wrangler d1 migrations apply clinica-inteligente-production --local",
+    "db:migrate:prod": "wrangler d1 migrations apply clinica-inteligente-production",
+    "db:seed": "wrangler d1 execute clinica-inteligente-production --local --file=./seed.sql",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed",
+    "db:studio": "wrangler d1 execute clinica-inteligente-production --local --command=\"SELECT name FROM sqlite_master WHERE type='table'\"",
+    "type-check": "tsc --noEmit",
+    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
+  },
+  "dependencies": {
+    "hono": "^4.12.8",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-dev-server": "^0.18.2",
+    "@cloudflare/workers-types": "^4.20250317.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clinica-inteligente",
+  "compatibility_date": "2026-03-20",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+
+  // ============================================================
+  // VARIÁVEIS DE AMBIENTE
+  // Para produção, configure via: wrangler secret put JWT_SECRET
+  // ============================================================
+  "vars": {
+    "ENVIRONMENT": "development"
+  },
+
+  // ============================================================
+  // BANCO DE DADOS D1
+  // Para criar: wrangler d1 create clinica-inteligente-production
+  // Copie o database_id gerado e substitua abaixo
+  // ============================================================
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clinica-inteligente-production",
+      "database_id": "SUBSTITUA_PELO_ID_GERADO"
+    }
+  ]
+
+  // ============================================================
+  // SECRETS (configurar via CLI, NÃO colocar aqui)
+  // wrangler secret put JWT_SECRET
+  // wrangler secret put OPENAI_API_KEY  (opcional)
+  // ============================================================
+
+  // ============================================================
+  // R2 (para arquivos de exames - futuro)
+  // ============================================================
+  // "r2_buckets": [
+  //   {
+  //     "binding": "STORAGE",
+  //     "bucket_name": "clinica-inteligente-files"
+  //   }
+  // ],
+
+  // ============================================================
+  // AI GATEWAY (Cloudflare AI - futuro)
+  // ============================================================
+  // "ai": {
+  //   "binding": "AI"
+  // }
+}
