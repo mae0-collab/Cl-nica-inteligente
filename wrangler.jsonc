@@ -31,7 +31,8 @@
   // ============================================================
   // SECRETS (configurar via CLI, NÃO colocar aqui)
   // wrangler secret put JWT_SECRET
-  // wrangler secret put OPENAI_API_KEY  (opcional)
+  // wrangler secret put OPENAI_API_KEY          (obrigatório para IA real)
+  // wrangler secret put OPENAI_MODEL            (opcional — padrão: gpt-4o)
   // ============================================================
 
   // ============================================================

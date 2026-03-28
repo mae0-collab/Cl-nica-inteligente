@@ -7,6 +7,7 @@ export type Bindings = {
   DB: D1Database;
   JWT_SECRET: string;
   OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;     // ex: 'gpt-4o', 'gpt-4o-mini' — padrão: 'gpt-4o'
   ENVIRONMENT?: string;
 };
 
