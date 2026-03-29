@@ -359,9 +359,9 @@ Responda em JSON com exatamente esta estrutura:
         'Authorization': `Bearer ${openaiApiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: 'gpt-5.2',
         temperature: 0.3,   // baixo para consistência clínica
-        max_tokens: 800,
+        max_completion_tokens: 800,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },

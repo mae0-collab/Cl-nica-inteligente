@@ -18,13 +18,12 @@ import type { AppEnv } from '../lib/types'
 import { analyzeClinicalLabs } from '../modules/clinical-intelligence/engine'
 import {
   buildLocalFallbackReport,
-  createOpenAIClient,
   generateAIClinicalReport,
+  generateChatResponse,
 } from '../modules/ai/openai'
 import {
   buildClinicalSystemPrompt,
   buildUserContent,
-  CLINICAL_REPORT_JSON_SCHEMA,
 } from '../modules/ai/prompts'
 import type { AIReportOutput } from '../modules/clinical-intelligence/types'
 
@@ -90,7 +89,7 @@ aiRoutes.post('/lab-report', async (c) => {
   )
 
   // ── 3. Relatório de IA ──────────────────────────────────────
-  const model = OPENAI_MODEL ?? 'gpt-4o-mini'
+  const model = OPENAI_MODEL ?? 'gpt-5.2'
   let report:      AIReportOutput
   let generatedBy: 'openai' | 'local' = 'local'
   let tokensUsed   = 0
@@ -173,7 +172,7 @@ aiRoutes.post('/clinical-report', async (c) => {
   }
 
   const { patientName, findings, suggestions, labs, mode } = validation.data
-  const model     = OPENAI_MODEL ?? 'gpt-4o-mini'
+  const model     = OPENAI_MODEL ?? 'gpt-5.2'
   const startTime = Date.now()
 
   let report:      AIReportOutput
@@ -182,59 +181,58 @@ aiRoutes.post('/clinical-report', async (c) => {
 
   if (OPENAI_API_KEY) {
     try {
-      const client = createOpenAIClient(OPENAI_API_KEY)
+      // Usar fetch direto — compatível com Cloudflare Workers
+      const { CLINICAL_REPORT_JSON_SCHEMA: schema } = await import('../modules/ai/prompts')
+      const systemPrompt = buildClinicalSystemPrompt(mode)
+      const userContent  = buildUserContent({ patientName, findings, suggestions, combinationAlerts: [], labs, mode })
 
-      const response = await client.responses.create({
-        model,
-        store: false,
-        input: [
-          {
-            role:    'system',
-            content: [{ type: 'input_text', text: buildClinicalSystemPrompt(mode) }],
-          },
-          {
-            role:    'user',
-            content: [{
-              type: 'input_text',
-              text: buildUserContent({ patientName, findings, suggestions, combinationAlerts: [], labs, mode }),
-            }],
-          },
-        ],
-        text: {
-          format: {
-            type:   'json_schema',
-            name:   'clinical_report',
-            strict: true,
-            schema: CLINICAL_REPORT_JSON_SCHEMA,
-          },
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method:  'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type':  'application/json',
         },
+        body: JSON.stringify({
+          model,
+          temperature: 0.3,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user',   content: userContent  },
+          ],
+          response_format: {
+            type:        'json_schema',
+            json_schema: { name: 'clinical_report', strict: true, schema },
+          },
+        }),
       })
 
-      report      = JSON.parse(response.output_text) as AIReportOutput
+      if (!res.ok) throw new Error(`OpenAI ${res.status}`)
+      const data  = await res.json() as any
+      const raw   = data.choices?.[0]?.message?.content ?? ''
+      report      = JSON.parse(raw) as AIReportOutput
       generatedBy = 'openai'
-      tokensUsed  = (response as any).usage?.total_tokens ?? 0
+      tokensUsed  = data.usage?.total_tokens ?? 0
     } catch (err) {
       console.error('[clinical-report] OpenAI error — usando fallback:', err)
-      // Fallback manual para /clinical-report (sem clinicalResult completo)
       report = {
-        summary:                   `${findings.length} achado(s) identificado(s): ${findings.slice(0,2).join('; ')}.`,
-        clinicalInterpretation:    findings.map((f) => `Achado: ${f}`),
+        summary:                    `${findings.length} achado(s): ${findings.slice(0,2).join('; ')}.`,
+        clinicalInterpretation:     findings.map((f) => `Achado: ${f}`),
         patientFriendlyExplanation: mode === 'patient'
           ? 'Seu profissional identificou pontos nos seus exames. Siga as orientações.'
           : `${findings.length} achado(s). Avalie cada ponto com o paciente.`,
-        followUpQuestions:         suggestions.slice(0,3).map((s) => `Considerar: ${s}`),
-        caution:                   'Relatório de apoio clínico — não substitui avaliação médica.',
+        followUpQuestions:          suggestions.slice(0,3).map((s) => `Considerar: ${s}`),
+        caution:                    'Relatório de apoio clínico — não substitui avaliação médica.',
       }
     }
   } else {
     report = {
-      summary:                   `${findings.length} achado(s): ${findings.slice(0,2).join('; ')}.`,
-      clinicalInterpretation:    findings.map((f) => `Achado: ${f}`),
+      summary:                    `${findings.length} achado(s): ${findings.slice(0,2).join('; ')}.`,
+      clinicalInterpretation:     findings.map((f) => `Achado: ${f}`),
       patientFriendlyExplanation: mode === 'patient'
         ? 'Seu profissional identificou pontos nos seus exames. Siga as orientações.'
         : `${findings.length} achado(s). Avalie cada ponto com o paciente.`,
-      followUpQuestions:         suggestions.slice(0,3).map((s) => `Considerar: ${s}`),
-      caution:                   'Configure OPENAI_API_KEY para relatórios com IA real.',
+      followUpQuestions:          suggestions.slice(0,3).map((s) => `Considerar: ${s}`),
+      caution:                    'Configure OPENAI_API_KEY para relatórios com IA real.',
     }
   }
 
@@ -270,7 +268,7 @@ aiRoutes.post('/clinical-report', async (c) => {
 // ─────────────────────────────────────────────────────────────
 aiRoutes.post('/chat', async (c) => {
   const professionalId = getAuthProfessionalId(c)
-  const { DB, OPENAI_API_KEY } = c.env
+  const { DB, OPENAI_API_KEY, OPENAI_MODEL } = c.env
 
   const body = await c.req.json().catch(() => null)
   if (!body) return c.json({ error: 'Corpo inválido' }, 400)
@@ -304,9 +302,9 @@ aiRoutes.post('/chat', async (c) => {
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({
-          model:       'gpt-4o-mini',
+          model:       OPENAI_MODEL ?? 'gpt-5.2',
           temperature: 0.7,
-          max_tokens:  800,
+          max_completion_tokens: 800,
           messages: [
             { role: 'system', content: buildChatSystemPrompt(context_type) },
             { role: 'user',   content: prompt },

@@ -1,10 +1,10 @@
 // ============================================================
 // AI MODULE — OpenAI Integration
-// Integração real com OpenAI Responses API + Structured Outputs
-// Cloudflare Workers: API key vem de c.env (não process.env)
+// Usa fetch direto para Chat Completions API (compatível com
+// Cloudflare Workers — client.responses.create não funciona)
+// Structured Outputs via response_format: json_schema
 // ============================================================
 
-import OpenAI from 'openai'
 import type { AIReportOutput, ClinicalResult } from '../clinical-intelligence/types'
 import type { ReportMode } from './prompts'
 import {
@@ -14,29 +14,17 @@ import {
 } from './prompts'
 
 // ─────────────────────────────────────────────────────────────
-// Factory: cria cliente OpenAI com a chave do Cloudflare env
-// dangerouslyAllowBrowser: false — Workers não são browsers
-// ─────────────────────────────────────────────────────────────
-export function createOpenAIClient(apiKey: string): OpenAI {
-  return new OpenAI({
-    apiKey,
-    dangerouslyAllowBrowser: false,
-  })
-}
-
-// ─────────────────────────────────────────────────────────────
-// Gera relatório clínico via OpenAI Responses API
-// store: false — sem retenção de dados no OpenAI
+// Gera relatório clínico via Chat Completions + Structured Outputs
+// Compatível com Cloudflare Workers (fetch nativo)
 // ─────────────────────────────────────────────────────────────
 export async function generateAIClinicalReport(params: {
-  apiKey:        string
-  model:         string
-  patientName?:  string
+  apiKey:         string
+  model:          string
+  patientName?:   string
   clinicalResult: ClinicalResult
-  labs:          Record<string, number | undefined>
-  mode:          ReportMode
+  labs:           Record<string, number | undefined>
+  mode:           ReportMode
 }): Promise<{ report: AIReportOutput; tokensUsed: number }> {
-  const client = createOpenAIClient(params.apiKey)
 
   const systemPrompt = buildClinicalSystemPrompt(params.mode)
   const userContent  = buildUserContent({
@@ -48,39 +36,48 @@ export async function generateAIClinicalReport(params: {
     mode:              params.mode,
   })
 
-  const response = await client.responses.create({
-    model:  params.model,
-    store:  false,   // sem retenção no OpenAI
-    input: [
-      {
-        role:    'system',
-        content: [{ type: 'input_text', text: systemPrompt }],
-      },
-      {
-        role:    'user',
-        content: [{ type: 'input_text', text: userContent }],
-      },
-    ],
-    text: {
-      format: {
-        type:   'json_schema',
-        name:   'clinical_report',
-        strict: true,
-        schema: CLINICAL_REPORT_JSON_SCHEMA,
-      },
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method:  'POST',
+    headers: {
+      'Authorization': `Bearer ${params.apiKey}`,
+      'Content-Type':  'application/json',
     },
+    body: JSON.stringify({
+      model:       params.model,
+      temperature: 0.3,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userContent  },
+      ],
+      response_format: {
+        type:        'json_schema',
+        json_schema: {
+          name:   'clinical_report',
+          strict: true,
+          schema: CLINICAL_REPORT_JSON_SCHEMA,
+        },
+      },
+    }),
   })
 
-  const raw = response.output_text
-  const report = JSON.parse(raw) as AIReportOutput
-  const tokensUsed = (response as any).usage?.total_tokens ?? 0
+  if (!response.ok) {
+    const errText = await response.text()
+    throw new Error(`OpenAI API error ${response.status}: ${errText}`)
+  }
 
+  const data = await response.json() as any
+
+  const raw        = data.choices?.[0]?.message?.content ?? ''
+  const tokensUsed = data.usage?.total_tokens ?? 0
+
+  if (!raw) throw new Error('OpenAI retornou resposta vazia')
+
+  const report = JSON.parse(raw) as AIReportOutput
   return { report, tokensUsed }
 }
 
 // ─────────────────────────────────────────────────────────────
 // Fallback local (sem API key ou em caso de erro na API)
-// Mantém a mesma estrutura de AIReportOutput
 // ─────────────────────────────────────────────────────────────
 export function buildLocalFallbackReport(
   clinicalResult: ClinicalResult,
@@ -107,7 +104,7 @@ export function buildLocalFallbackReport(
     patientFriendlyExplanation:
       mode === 'patient'
         ? findings.length > 0
-          ? `Seu profissional identificou ${findings.length} ponto(s) nos seus exames que merecem atenção. Siga as orientações do seu profissional de saúde para os próximos passos.`
+          ? `Seu profissional identificou ${findings.length} ponto(s) nos seus exames que merecem atenção. Siga as orientações do seu profissional.`
           : `Seus exames estão ótimos! Continue com seus hábitos saudáveis.`
         : `${findings.length > 0 ? findings.length + ' achado(s) identificado(s).' : 'Sem achados anormais.'} Avalie individualmente com o paciente.`,
 
@@ -116,9 +113,47 @@ export function buildLocalFallbackReport(
         ? combinationAlerts.map((a) => `Investigar: ${a}`)
         : suggestions.length > 0
           ? suggestions.slice(0, 3).map((s) => `Considerar: ${s}`)
-          : ['Reavaliar após intervenções recomendadas.', 'Repetir exames em 60–90 dias se houver alterações.'],
+          : ['Reavaliar após intervenções recomendadas.', 'Repetir exames em 60–90 dias.'],
 
     caution:
-      'Este relatório é gerado por um sistema de apoio à decisão clínica e não substitui a avaliação médica individualizada. Para relatórios com IA real, configure OPENAI_API_KEY.',
+      'Este relatório é gerado por um sistema de apoio à decisão clínica e não substitui a avaliação médica individualizada.',
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Chat livre via Chat Completions (fetch direto)
+// ─────────────────────────────────────────────────────────────
+export async function generateChatResponse(params: {
+  apiKey:      string
+  model:       string
+  systemPrompt: string
+  userPrompt:  string
+}): Promise<{ response: string; tokensUsed: number }> {
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method:  'POST',
+    headers: {
+      'Authorization': `Bearer ${params.apiKey}`,
+      'Content-Type':  'application/json',
+    },
+    body: JSON.stringify({
+      model:       params.model,
+      temperature: 0.7,
+      max_completion_tokens: 800,
+      messages: [
+        { role: 'system', content: params.systemPrompt },
+        { role: 'user',   content: params.userPrompt   },
+      ],
+    }),
+  })
+
+  if (!res.ok) {
+    throw new Error(`OpenAI chat error ${res.status}`)
+  }
+
+  const data      = await res.json() as any
+  const response  = data.choices?.[0]?.message?.content ?? 'Sem resposta.'
+  const tokensUsed = data.usage?.total_tokens ?? 0
+
+  return { response, tokensUsed }
 }
