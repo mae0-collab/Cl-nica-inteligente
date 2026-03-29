@@ -13,9 +13,7 @@ import authRoutes from './routes/auth'
 import professionalRoutes from './routes/professionals'
 import patientRoutes from './routes/patients'
 import consultationRoutes from './routes/consultations'
-import courseRoutes from './routes/courses'
 import clinicalCaseRoutes from './routes/clinical-cases'
-import protocolRoutes from './routes/protocols'
 import aiRoutes from './routes/ai'
 import marketplaceRoutes from './routes/marketplace'
 import clinicalIntelligenceRoutes from './routes/clinical-intelligence'
@@ -80,9 +78,7 @@ app.route('/api/auth', authRoutes)
 app.route('/api/professionals', professionalRoutes)
 app.route('/api/patients', patientRoutes)
 app.route('/api/consultations', consultationRoutes)
-app.route('/api/courses', courseRoutes)
 app.route('/api/clinical-cases', clinicalCaseRoutes)
-app.route('/api/protocols', protocolRoutes)
 app.route('/api/ai', aiRoutes)
 app.route('/api/marketplace', marketplaceRoutes)
 app.route('/api/clinical', clinicalIntelligenceRoutes)
@@ -425,14 +421,8 @@ function buildDashboardPage(): string {
         <a onclick="showView('patients'); loadPatients()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-patients">
           <i class="fas fa-users mr-3"></i>Pacientes
         </a>
-        <a onclick="showView('courses'); loadCourses()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-courses">
-          <i class="fas fa-graduation-cap mr-3"></i>Cursos
-        </a>
         <a onclick="showView('cases'); loadClinicalCases()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-cases">
           <i class="fas fa-briefcase-medical mr-3"></i>Casos Clínicos
-        </a>
-        <a onclick="showView('protocols'); loadProtocols()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-protocols">
-          <i class="fas fa-file-medical mr-3"></i>Protocolos
         </a>
         <a onclick="showView('ai'); AIReport.renderPanel()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-ai">
           <i class="fas fa-robot mr-3"></i>Assistente IA
@@ -483,8 +473,8 @@ function buildDashboardPage(): string {
             <p id="total-consultations" class="text-3xl font-bold text-gray-800">—</p>
           </div>
           <div class="bg-white p-6 rounded-lg shadow">
-            <p class="text-gray-500 text-sm">Cursos Concluídos</p>
-            <p id="courses-completed" class="text-3xl font-bold text-gray-800">—</p>
+            <p class="text-gray-500 text-sm">Análises de Exames</p>
+            <p id="exames-realizados" class="text-3xl font-bold text-gray-800">—</p>
           </div>
           <div class="bg-white p-6 rounded-lg shadow">
             <p class="text-gray-500 text-sm">Pontos XP</p>
@@ -499,9 +489,9 @@ function buildDashboardPage(): string {
               <i class="fas fa-user-plus text-3xl text-purple-600 mb-2 block"></i>
               <p class="font-semibold">Pacientes</p>
             </button>
-            <button onclick="showView('courses'); loadCourses()" class="p-4 border-2 border-purple-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition text-center">
-              <i class="fas fa-book-open text-3xl text-purple-600 mb-2 block"></i>
-              <p class="font-semibold">Cursos</p>
+            <button onclick="showView('hemograma'); HemogramaSimulator.render()" class="p-4 border-2 border-purple-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition text-center">
+              <i class="fas fa-tint text-3xl text-red-500 mb-2 block"></i>
+              <p class="font-semibold">Hemograma / FSA</p>
             </button>
             <button onclick="showView('cases'); loadClinicalCases()" class="p-4 border-2 border-purple-200 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition text-center">
               <i class="fas fa-stethoscope text-3xl text-purple-600 mb-2 block"></i>
@@ -528,27 +518,11 @@ function buildDashboardPage(): string {
         </div>
       </div>
 
-      <!-- Courses View -->
-      <div id="view-courses" class="view-section p-6 hidden">
-        <h3 class="text-xl font-bold mb-6">Cursos Disponíveis</h3>
-        <div id="courses-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <p class="text-gray-500">Carregando cursos...</p>
-        </div>
-      </div>
-
       <!-- Clinical Cases View -->
       <div id="view-cases" class="view-section p-6 hidden">
         <h3 class="text-xl font-bold mb-6">Casos Clínicos</h3>
         <div id="cases-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <p class="text-gray-500">Carregando casos...</p>
-        </div>
-      </div>
-
-      <!-- Protocols View -->
-      <div id="view-protocols" class="view-section p-6 hidden">
-        <h3 class="text-xl font-bold mb-6">Protocolos Clínicos</h3>
-        <div id="protocols-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <p class="text-gray-500">Carregando protocolos...</p>
         </div>
       </div>
 
@@ -590,7 +564,7 @@ function buildDashboardPage(): string {
                 <option value="general_question">Pergunta geral</option>
                 <option value="case_analysis">Análise de caso</option>
                 <option value="lab_interpretation">Interpretação de exames</option>
-                <option value="protocol_suggestion">Sugestão de protocolo</option>
+                <option value="hemograma_interpretation">Interpretação de hemograma</option>
                 <option value="supplement_recommendation">Suplementação</option>
               </select>
               <input type="text" id="ai-input" placeholder="Digite sua pergunta clínica..."
@@ -610,15 +584,28 @@ function buildDashboardPage(): string {
       <!-- VIEW: Hemograma / FSA Simulator -->
       <div id="view-hemograma" class="view-section p-6 hidden">
         <div class="max-w-5xl mx-auto">
-          <div class="flex items-center gap-3 mb-6">
+          <div class="flex items-center gap-3 mb-4">
             <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
               <i class="fas fa-tint text-red-600 text-lg"></i>
             </div>
             <div>
-              <h3 class="text-xl font-bold text-gray-900">Simulador de Hemograma / FSA</h3>
-              <p class="text-sm text-gray-500">Interpretação clínica com IA — Série Vermelha, Leucograma e Fórmula Sanguínea Ampliada</p>
+              <h3 class="text-xl font-bold text-gray-900">Hemograma + FSA com IA</h3>
+              <p class="text-sm text-gray-500">Upload de laudo ou inserção manual — análise com GPT-5.2</p>
             </div>
           </div>
+
+          <!-- Tabs: Upload / Manual -->
+          <div class="flex gap-2 border-b border-gray-200 mb-5">
+            <button id="hg-tab-upload" onclick="HemogramaSimulator.switchTab('upload')"
+              class="px-4 py-2 text-sm font-semibold text-red-700 border-b-2 border-red-500 -mb-px flex items-center gap-1">
+              <i class="fas fa-upload"></i> Upload de Laudo
+            </button>
+            <button id="hg-tab-manual" onclick="HemogramaSimulator.switchTab('manual')"
+              class="px-4 py-2 text-sm font-semibold text-gray-500 border-b-2 border-transparent -mb-px hover:text-red-600 flex items-center gap-1">
+              <i class="fas fa-keyboard"></i> Inserção Manual
+            </button>
+          </div>
+
           <!-- Painel injetado pelo HemogramaSimulator.render() -->
           <div id="hemograma-panel"></div>
         </div>
@@ -920,7 +907,7 @@ function buildHomePage(): string {
     <section class="bg-gradient-to-br from-purple-600 to-purple-800 text-white py-20 px-6 text-center">
       <h1 class="text-4xl md:text-5xl font-bold mb-4">Plataforma Completa para<br>Profissionais de Saúde Integrativa</h1>
       <p class="text-xl text-purple-100 mb-8 max-w-2xl mx-auto">
-        CRM de Pacientes · Cursos · Casos Clínicos · Protocolos · Assistente IA
+        CRM de Pacientes · Análise de Exames · Casos Clínicos · Assistente IA · Hemograma FSA
       </p>
       <a href="/register" class="bg-white text-purple-700 font-bold px-8 py-4 rounded-xl text-lg hover:bg-purple-50 transition shadow-lg inline-block">
         Começar Grátis <i class="fas fa-arrow-right ml-2"></i>
@@ -935,9 +922,9 @@ function buildHomePage(): string {
           <p class="text-gray-600">Gerencie seus pacientes com prontuários completos, histórico de consultas e exames laboratoriais.</p>
         </div>
         <div class="text-center p-6">
-          <div class="text-5xl text-purple-600 mb-4"><i class="fas fa-graduation-cap"></i></div>
-          <h3 class="text-xl font-bold mb-2">Cursos e Formação</h3>
-          <p class="text-gray-600">Acesse cursos especializados em saúde integrativa, nutrição funcional e medicina integrativa.</p>
+          <div class="text-5xl text-red-500 mb-4"><i class="fas fa-tint"></i></div>
+          <h3 class="text-xl font-bold mb-2">Hemograma + FSA com IA</h3>
+          <p class="text-gray-600">Faça upload do laudo ou insira os valores. A IA (GPT-5.2) interpreta série vermelha, leucograma e FSA completo.</p>
         </div>
         <div class="text-center p-6">
           <div class="text-5xl text-purple-600 mb-4"><i class="fas fa-robot"></i></div>

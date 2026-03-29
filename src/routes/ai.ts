@@ -35,6 +35,7 @@ import {
   HEMOGRAMA_REPORT_JSON_SCHEMA,
 } from '../modules/hemograma/prompts'
 import type { HemogramaReportOutput } from '../modules/hemograma/prompts'
+import type { HemogramaInput } from '../modules/hemograma/types'
 
 const aiRoutes = new Hono<AppEnv>()
 aiRoutes.use('*', authMiddleware)
@@ -592,6 +593,311 @@ aiRoutes.post('/hemograma', async (c) => {
 })
 
 // ── Fallback local para hemograma ────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// POST /api/ai/hemograma/upload — Upload de laudo (PDF/Imagem)
+// Extrai valores do documento e devolve análise completa
+// ─────────────────────────────────────────────────────────────
+aiRoutes.post('/hemograma/upload', async (c) => {
+  const professionalId = getAuthProfessionalId(c)
+  const { DB, OPENAI_API_KEY, OPENAI_MODEL } = c.env
+
+  if (!OPENAI_API_KEY) {
+    return c.json({ success: false, error: 'OPENAI_API_KEY não configurada — upload requer IA ativa.' }, 400)
+  }
+
+  // ── 1. Ler multipart ─────────────────────────────────────
+  let formData: FormData
+  try {
+    formData = await c.req.formData()
+  } catch {
+    return c.json({ success: false, error: 'Envie o arquivo como multipart/form-data com campo "file".' }, 400)
+  }
+
+  const file = formData.get('file') as File | null
+  if (!file) {
+    return c.json({ success: false, error: 'Campo "file" não encontrado no formulário.' }, 400)
+  }
+
+  const maxSizeMB = 10
+  if (file.size > maxSizeMB * 1024 * 1024) {
+    return c.json({ success: false, error: `Arquivo muito grande. Máximo: ${maxSizeMB} MB.` }, 400)
+  }
+
+  const mime     = file.type?.toLowerCase() || ''
+  const fileName = (file.name || '').toLowerCase()
+  const isPDF    = mime === 'application/pdf' || fileName.endsWith('.pdf')
+  const isImage  = mime.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/.test(fileName)
+
+  if (!isPDF && !isImage) {
+    return c.json({
+      success: false,
+      error: 'Formato não suportado. Envie PDF ou imagem (JPG, PNG, WEBP).',
+    }, 400)
+  }
+
+  const startTime = Date.now()
+  const model = OPENAI_MODEL ?? 'gpt-5.2'
+
+  // ── 2. Extrair conteúdo do arquivo ───────────────────────
+  const patientName = (formData.get('patientName') as string | null)?.trim() || undefined
+  const sexo        = (formData.get('sexo') as string | null) as 'M' | 'F' | undefined
+  const idadeStr    = formData.get('idade') as string | null
+  const idade       = idadeStr ? parseInt(idadeStr) : undefined
+  const mode        = ((formData.get('mode') as string | null) ?? 'clinical') as 'clinical' | 'patient'
+
+  let extractedText = ''
+  let imageBase64   = ''
+  let contentType   = ''
+
+  if (isPDF) {
+    // PDF: extrair texto embutido via parse manual (compatível com Cloudflare Workers)
+    try {
+      const arrayBuf = await file.arrayBuffer()
+      const uint8    = new Uint8Array(arrayBuf)
+      const pdfStr   = new TextDecoder('latin1').decode(uint8)
+
+      // ── Método 1: Tj direto (busca global — mais confiável) ─────────────────
+      // Evita o bug do BT..ET ser cortado por palavras como "COMPLETO", "GABARITO"
+      const rawTexts: string[] = []
+
+      // Captura todos os operadores Tj e TJ diretamente
+      const tjDirect = pdfStr.matchAll(/\(([^)]{1,300})\)\s*Tj\b/g)
+      for (const m of tjDirect) rawTexts.push(m[1])
+
+      const tjArrays = pdfStr.matchAll(/\[([^\]]{1,500})\]\s*TJ\b/g)
+      for (const m of tjArrays) {
+        const parts = m[1].matchAll(/\(([^)]*)\)/g)
+        for (const p of parts) rawTexts.push(p[1])
+      }
+
+      // ── Método 2: fallback — texto legível dentro de streams ────────────────
+      if (rawTexts.length === 0) {
+        // Extrai blocos stream...endstream e busca texto imprimível
+        const streams = pdfStr.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)
+        for (const s of streams) {
+          const printable = s[1].replace(/[^\x20-\x7E\n]/g, ' ').trim()
+          if (printable.length > 50) rawTexts.push(printable)
+        }
+      }
+
+      extractedText = rawTexts
+        .join('\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\(/g, '(')
+        .replace(/\\\)/g, ')')
+        .replace(/\\r/g, '')
+        .trim()
+
+      // Se mesmo assim não extraiu texto suficiente → PDF escaneado
+      if (extractedText.length < 80) {
+        return c.json({
+          success: false,
+          error: 'Este PDF parece ser escaneado (sem texto selecionável). Envie uma imagem (JPG/PNG) do laudo.',
+          tip: 'Tire uma foto ou screenshot do laudo e envie como imagem.',
+        }, 422)
+      }
+    } catch (err) {
+      console.error('[upload] PDF parse error:', err)
+      return c.json({ success: false, error: 'Erro ao processar PDF. Tente converter para imagem.' }, 500)
+    }
+  } else {
+    // Imagem: converter para base64
+    try {
+      const arrayBuf  = await file.arrayBuffer()
+      const uint8     = new Uint8Array(arrayBuf)
+      imageBase64     = btoa(String.fromCharCode(...uint8))
+      contentType     = mime || 'image/jpeg'
+    } catch {
+      return c.json({ success: false, error: 'Erro ao processar imagem.' }, 500)
+    }
+  }
+
+  // ── 3. GPT extrai os valores do hemograma ────────────────
+  const extractionSystemPrompt = `Você é um especialista em leitura de laudos laboratoriais hematológicos.
+Sua tarefa: extrair SOMENTE os valores numéricos do hemograma/FSA do texto ou imagem fornecida.
+Retorne APENAS um JSON válido com os campos disponíveis, sem texto adicional.
+Campos possíveis (use apenas os que estão no laudo, ignore os ausentes):
+hemoglobina (g/dL), hematocrito (%), eritrocitos (milhões/µL), vcm (fL), hcm (pg), chcm (g/dL), rdw (%),
+leucocitos (/µL), neutrofilos (/µL), linfocitos (/µL), monocitos (/µL), eosinofilos (/µL), basofilos (/µL), bastoes (/µL),
+plaquetas (/µL), patientName (string, se encontrado no laudo).
+IMPORTANTE: neutrófilos, linfócitos etc. devem ser valores ABSOLUTOS (/µL), não percentuais.
+Se o laudo mostrar apenas percentuais e o total de leucócitos, calcule os valores absolutos.
+Exemplo: leucocitos=8000, neutrofilos_pct=65% → neutrofilos=5200.`
+
+  let hemogramaValues: HemogramaInput = {}
+  let detectedPatientName = patientName
+
+  try {
+    const messages: any[] = [{ role: 'system', content: extractionSystemPrompt }]
+
+    if (isPDF && extractedText) {
+      messages.push({
+        role: 'user',
+        content: `Extraia os valores do hemograma deste laudo:\n\n${extractedText.slice(0, 8000)}`,
+      })
+    } else {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Extraia os valores do hemograma desta imagem de laudo:' },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${contentType};base64,${imageBase64}`, detail: 'high' },
+          },
+        ],
+      })
+    }
+
+    const extractRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_completion_tokens: 600,
+        messages,
+        response_format: { type: 'json_object' },
+      }),
+    })
+
+    if (!extractRes.ok) throw new Error(`OpenAI error ${extractRes.status}`)
+    const extractData = await extractRes.json() as any
+    const rawJson = extractData.choices?.[0]?.message?.content ?? '{}'
+    const parsed  = JSON.parse(rawJson)
+
+    // Extrair nome do paciente se a IA encontrou
+    if (!detectedPatientName && parsed.patientName) {
+      detectedPatientName = parsed.patientName
+      delete parsed.patientName
+    }
+
+    // Mapear campos numéricos
+    const campos: (keyof HemogramaInput)[] = [
+      'hemoglobina', 'hematocrito', 'eritrocitos', 'vcm', 'hcm', 'chcm', 'rdw',
+      'leucocitos', 'neutrofilos', 'linfocitos', 'monocitos', 'eosinofilos', 'basofilos', 'bastoes',
+      'plaquetas',
+    ]
+    for (const campo of campos) {
+      const v = parsed[campo]
+      if (v !== undefined && v !== null && !isNaN(Number(v))) {
+        (hemogramaValues as any)[campo] = Number(v)
+      }
+    }
+    if (sexo)  hemogramaValues.sexo  = sexo
+    if (idade) hemogramaValues.idade = idade
+
+  } catch (err) {
+    console.error('[upload] GPT extraction error:', err)
+    return c.json({ success: false, error: 'Falha ao extrair valores do documento. Tente inserir manualmente.' }, 500)
+  }
+
+  // ── 4. Verificar se ao menos 1 valor foi extraído ────────
+  const temValores = Object.entries(hemogramaValues)
+    .filter(([k]) => !['sexo', 'idade'].includes(k))
+    .some(([, v]) => v !== undefined)
+
+  if (!temValores) {
+    return c.json({
+      success: false,
+      error: 'Não foi possível identificar valores de hemograma no documento. Verifique se o arquivo contém um laudo hematológico.',
+    }, 422)
+  }
+
+  // ── 5. Motor hematológico + IA ────────────────────────────
+  const resultado = analisarHemograma(hemogramaValues)
+
+  let relatorioIA: HemogramaReportOutput
+  let generatedBy: 'openai' | 'local' = 'local'
+  let tokensUsed = 0
+
+  try {
+    const systemPrompt = buildHemogramaSystemPrompt(mode)
+    const userContent  = buildHemogramaUserContent(hemogramaValues, resultado, detectedPatientName, mode)
+
+    const analysisRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_completion_tokens: 1500,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userContent  },
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'hemograma_report',
+            strict: true,
+            schema: HEMOGRAMA_REPORT_JSON_SCHEMA,
+          },
+        },
+      }),
+    })
+
+    if (!analysisRes.ok) throw new Error(`OpenAI analysis error ${analysisRes.status}`)
+    const analysisData = await analysisRes.json() as any
+    const raw = analysisData.choices?.[0]?.message?.content ?? ''
+    if (!raw) throw new Error('Resposta vazia')
+    relatorioIA = JSON.parse(raw) as HemogramaReportOutput
+    tokensUsed  = analysisData.usage?.total_tokens ?? 0
+    generatedBy = 'openai'
+  } catch (err) {
+    console.error('[upload] analysis error:', err)
+    relatorioIA = buildLocalHemogramaReport(resultado, mode)
+  }
+
+  const responseTimeMs = Date.now() - startTime
+
+  // ── 6. Log ───────────────────────────────────────────────
+  try {
+    await DB.prepare(`
+      INSERT INTO ai_interactions
+        (professional_id, context_type, input_summary, output_summary, model_used, tokens_used, response_time_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).bind(
+      professionalId,
+      'hemograma_upload',
+      JSON.stringify({ source: isPDF ? 'pdf' : 'image', parametros: resultado.parametrosAnalisados, score: resultado.scoreGlobal }),
+      relatorioIA.resumo_executivo.slice(0, 500),
+      generatedBy === 'openai' ? model : 'local',
+      tokensUsed,
+      responseTimeMs,
+    ).run()
+  } catch { /* não bloquear */ }
+
+  return c.json({
+    success: true,
+    source:  isPDF ? 'pdf_texto' : 'imagem',
+    valores_extraidos: hemogramaValues,
+    patient_name_detected: detectedPatientName ?? null,
+    data: {
+      score_global:          resultado.scoreGlobal,
+      parametros_analisados: resultado.parametrosAnalisados,
+      achados:               resultado.achados,
+      padroes:               resultado.padroes,
+      sugestoes:             resultado.sugestoes,
+      alertas_criticos:      resultado.alertasCriticos,
+      alertas_combinados:    resultado.alertasCombinados,
+      relatorio_ia: {
+        generated_by:     generatedBy,
+        model:            generatedBy === 'openai' ? model : null,
+        response_time_ms: responseTimeMs,
+        tokens_used:      tokensUsed,
+        ...relatorioIA,
+      },
+    },
+  })
+})
+
 function buildLocalHemogramaReport(
   resultado: ReturnType<typeof analisarHemograma>,
   mode: 'clinical' | 'patient',

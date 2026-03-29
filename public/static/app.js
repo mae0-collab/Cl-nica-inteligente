@@ -48,8 +48,6 @@ const Auth = {
 const AppState = {
   currentView: 'dashboard',
   patients: [],
-  courses: [],
-  protocols: [],
 };
 
 // -------------------------------------------------------
@@ -113,10 +111,9 @@ function showView(viewName) {
   const titles = {
     dashboard: 'Dashboard',
     patients: 'Pacientes',
-    courses: 'Cursos',
     cases: 'Casos Clínicos',
-    protocols: 'Protocolos',
     ai: 'Assistente IA',
+    hemograma: 'Hemograma / FSA',
   };
 
   const pageTitle = document.getElementById('page-title');
@@ -135,7 +132,8 @@ async function loadDashboardStats() {
 
     document.getElementById('total-patients').textContent = stats.total_patients ?? 0;
     document.getElementById('total-consultations').textContent = stats.total_consultations ?? 0;
-    document.getElementById('courses-completed').textContent = stats.courses_completed ?? 0;
+    const exEl = document.getElementById('exames-realizados');
+    if (exEl) exEl.textContent = stats.ai_interactions_count ?? '—';
     document.getElementById('xp-points').textContent = stats.xp_points ?? 0;
     document.getElementById('xp-points-card').textContent = stats.xp_points ?? 0;
     document.getElementById('current-level').textContent = stats.level ?? 1;
@@ -242,114 +240,6 @@ async function submitPatient(e) {
 }
 
 // -------------------------------------------------------
-// CURSOS
-// -------------------------------------------------------
-async function loadCourses() {
-  const container = document.getElementById('courses-list');
-  if (!container) return;
-
-  container.innerHTML = '<p class="text-gray-400 col-span-3">Carregando...</p>';
-
-  try {
-    const courses = await apiFetch('/courses');
-    AppState.courses = courses || [];
-
-    if (!courses || courses.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 col-span-3 text-center py-8">Nenhum curso disponível.</p>';
-      return;
-    }
-
-    container.innerHTML = courses.map(course => `
-      <div class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition">
-        <div class="mb-3">
-          <span class="inline-block px-3 py-1 text-xs font-semibold rounded-full ${
-            course.difficulty === 'iniciante' ? 'bg-green-100 text-green-800' :
-            course.difficulty === 'intermediario' ? 'bg-yellow-100 text-yellow-800' :
-            'bg-red-100 text-red-800'
-          }">${capitalize(course.difficulty)}</span>
-          ${course.is_premium ? '<span class="ml-2 inline-block px-3 py-1 text-xs font-semibold rounded-full bg-purple-100 text-purple-800">Premium</span>' : '<span class="ml-2 inline-block px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Grátis</span>'}
-        </div>
-        <h3 class="font-bold text-lg mb-2">${escapeHtml(course.title)}</h3>
-        <p class="text-gray-600 text-sm mb-4 line-clamp-2">${escapeHtml(course.description || '')}</p>
-        <div class="flex justify-between items-center text-sm text-gray-500 mb-4">
-          <span><i class="fas fa-clock mr-1"></i>${course.duration_hours}h</span>
-          <span><i class="fas fa-book mr-1"></i>${course.total_lessons} aulas</span>
-          <span class="text-purple-600 font-semibold"><i class="fas fa-star mr-1"></i>${course.xp_reward} XP</span>
-        </div>
-        <button onclick="startCourse(${course.id})" class="w-full bg-purple-600 text-white py-2 rounded-lg hover:bg-purple-700 transition">
-          Iniciar Curso
-        </button>
-      </div>
-    `).join('');
-  } catch (err) {
-    container.innerHTML = '<p class="text-red-500 col-span-3">Erro ao carregar cursos.</p>';
-  }
-}
-
-async function startCourse(id) {
-  try {
-    await apiFetch(`/courses/${id}/progress`, {
-      method: 'POST',
-      body: JSON.stringify({ status: 'iniciado', lessons_completed: 0, progress_percentage: 0 }),
-    });
-    showNotification('Curso iniciado! Bom aprendizado!');
-  } catch (err) {
-    showNotification('Erro ao iniciar curso', 'error');
-  }
-}
-
-// -------------------------------------------------------
-// PROTOCOLOS
-// -------------------------------------------------------
-async function loadProtocols() {
-  const container = document.getElementById('protocols-list');
-  if (!container) return;
-
-  container.innerHTML = '<p class="text-gray-400 col-span-3">Carregando...</p>';
-
-  try {
-    const protocols = await apiFetch('/protocols');
-    AppState.protocols = protocols || [];
-
-    if (!protocols || protocols.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 col-span-3 text-center py-8">Nenhum protocolo disponível.</p>';
-      return;
-    }
-
-    container.innerHTML = protocols.map(p => `
-      <div class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition">
-        <h3 class="font-bold text-lg mb-2">${escapeHtml(p.title)}</h3>
-        <p class="text-gray-600 text-sm mb-3 line-clamp-2">${escapeHtml(p.description || '')}</p>
-        <div class="mb-4 flex gap-2 flex-wrap">
-          <span class="inline-block px-3 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800">${escapeHtml(p.condition)}</span>
-          <span class="inline-block px-3 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">${escapeHtml(p.specialty)}</span>
-          ${p.is_premium ? '<span class="inline-block px-3 py-1 text-xs font-semibold rounded-full bg-purple-100 text-purple-800">Premium</span>' : ''}
-        </div>
-        <button onclick="viewProtocol(${p.id})" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition">
-          Ver Protocolo
-        </button>
-      </div>
-    `).join('');
-  } catch (err) {
-    container.innerHTML = '<p class="text-red-500 col-span-3">Erro ao carregar protocolos.</p>';
-  }
-}
-
-async function viewProtocol(id) {
-  try {
-    const protocol = await apiFetch(`/protocols/${id}`);
-    if (!protocol) return;
-
-    const steps = Array.isArray(protocol.protocol_steps)
-      ? protocol.protocol_steps.map((s, i) => `${i + 1}. ${s.action || s}`).join('\n')
-      : 'Ver protocolo completo no sistema.';
-
-    alert(`${protocol.title}\n\nCondição: ${protocol.condition}\n\nPassos:\n${steps}`);
-  } catch {
-    showNotification('Erro ao carregar protocolo', 'error');
-  }
-}
-
 // -------------------------------------------------------
 // CASOS CLÍNICOS
 // -------------------------------------------------------
@@ -877,7 +767,267 @@ async function initApp() {
 // ============================================================
 const HemogramaSimulator = {
 
+  currentTab: 'upload',
+
   render() {
+    this.switchTab(this.currentTab || 'upload');
+  },
+
+  switchTab(tab) {
+    this.currentTab = tab;
+    // Atualizar estilos das abas
+    const tabUpload = document.getElementById('hg-tab-upload');
+    const tabManual = document.getElementById('hg-tab-manual');
+    if (tabUpload) {
+      tabUpload.className = tab === 'upload'
+        ? 'px-4 py-2 text-sm font-semibold text-red-700 border-b-2 border-red-500 -mb-px flex items-center gap-1'
+        : 'px-4 py-2 text-sm font-semibold text-gray-500 border-b-2 border-transparent -mb-px hover:text-red-600 flex items-center gap-1';
+    }
+    if (tabManual) {
+      tabManual.className = tab === 'manual'
+        ? 'px-4 py-2 text-sm font-semibold text-red-700 border-b-2 border-red-500 -mb-px flex items-center gap-1'
+        : 'px-4 py-2 text-sm font-semibold text-gray-500 border-b-2 border-transparent -mb-px hover:text-red-600 flex items-center gap-1';
+    }
+    if (tab === 'upload') this.renderUpload();
+    else this.renderManual();
+  },
+
+  renderUpload() {
+    const panel = document.getElementById('hemograma-panel');
+    if (!panel) return;
+    panel.innerHTML = `
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- UPLOAD FORM -->
+        <div class="space-y-4">
+
+          <!-- Drag & Drop -->
+          <div id="hg-dropzone"
+            class="bg-white rounded-xl border-2 border-dashed border-red-300 p-8 text-center cursor-pointer hover:border-red-500 hover:bg-red-50 transition"
+            onclick="document.getElementById('hg-file-input').click()"
+            ondrop="HemogramaSimulator.onDrop(event)"
+            ondragover="event.preventDefault(); this.classList.add('border-red-500','bg-red-50')"
+            ondragleave="this.classList.remove('border-red-500','bg-red-50')">
+            <i class="fas fa-file-medical text-5xl text-red-400 mb-3"></i>
+            <p class="font-semibold text-gray-700 mb-1">Arraste o laudo aqui</p>
+            <p class="text-sm text-gray-500 mb-3">ou clique para selecionar</p>
+            <p class="text-xs text-gray-400">Suportado: PDF (com texto) · JPG · PNG · WEBP · até 10 MB</p>
+            <input type="file" id="hg-file-input" accept=".pdf,.jpg,.jpeg,.png,.webp"
+              class="hidden" onchange="HemogramaSimulator.onFileSelect(event)">
+          </div>
+
+          <!-- Preview do arquivo selecionado -->
+          <div id="hg-file-preview" class="hidden bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div class="flex items-center gap-3">
+              <div id="hg-file-icon" class="w-10 h-10 rounded-lg flex items-center justify-center bg-red-100">
+                <i class="fas fa-file text-red-600"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p id="hg-file-name" class="text-sm font-semibold text-gray-800 truncate"></p>
+                <p id="hg-file-size" class="text-xs text-gray-400"></p>
+              </div>
+              <button onclick="HemogramaSimulator.clearFile()"
+                class="text-gray-400 hover:text-red-500 p-1">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
+            <div id="hg-img-preview-wrap" class="mt-3 hidden">
+              <img id="hg-img-preview" class="max-h-48 rounded-lg border border-gray-100 mx-auto" src="" alt="Preview">
+            </div>
+          </div>
+
+          <!-- Dados opcionais -->
+          <div class="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <h4 class="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <i class="fas fa-user-circle text-purple-400"></i> Dados do Paciente (opcional)
+            </h4>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Nome</label>
+                <input type="text" id="hg-up-name" placeholder="Ex: João Silva"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Sexo</label>
+                <select id="hg-up-sexo" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+                  <option value="">Não informado</option>
+                  <option value="F">Feminino</option>
+                  <option value="M">Masculino</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Idade</label>
+                <input type="number" id="hg-up-idade" placeholder="35" min="0" max="120"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+              </div>
+            </div>
+            <div class="mt-3">
+              <label class="block text-xs font-medium text-gray-600 mb-1">Modo de relatório</label>
+              <select id="hg-up-mode" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                <option value="clinical">🩺 Clínico (profissional)</option>
+                <option value="patient">👤 Paciente (linguagem simples)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Botão Analisar -->
+          <button onclick="HemogramaSimulator.uploadAnalisar()"
+            id="hg-up-btn"
+            class="w-full bg-gradient-to-r from-red-600 to-red-500 text-white font-semibold py-3 rounded-xl
+                   hover:from-red-700 hover:to-red-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50">
+            <i class="fas fa-upload"></i>
+            Enviar Laudo e Analisar com GPT-5.2
+          </button>
+
+          <p class="text-xs text-center text-gray-400">
+            <i class="fas fa-lock mr-1"></i>O arquivo é processado e descartado — não é armazenado.
+          </p>
+        </div>
+
+        <!-- RESULTADO -->
+        <div id="hg-up-resultado" class="space-y-4">
+          <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
+            <div>
+              <i class="fas fa-file-upload text-4xl mb-3 opacity-30"></i>
+              <p class="text-sm">Faça upload do laudo<br>para iniciar a análise</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  onFileSelect(event) {
+    const file = event.target.files?.[0];
+    if (file) this._showFilePreview(file);
+  },
+
+  onDrop(event) {
+    event.preventDefault();
+    document.getElementById('hg-dropzone')?.classList.remove('border-red-500','bg-red-50');
+    const file = event.dataTransfer?.files?.[0];
+    if (file) {
+      document.getElementById('hg-file-input').files = event.dataTransfer.files;
+      this._showFilePreview(file);
+    }
+  },
+
+  _showFilePreview(file) {
+    const preview = document.getElementById('hg-file-preview');
+    const nameEl  = document.getElementById('hg-file-name');
+    const sizeEl  = document.getElementById('hg-file-size');
+    const iconEl  = document.getElementById('hg-file-icon');
+    const imgWrap = document.getElementById('hg-img-preview-wrap');
+    const imgEl   = document.getElementById('hg-img-preview');
+    if (!preview) return;
+
+    preview.classList.remove('hidden');
+    if (nameEl) nameEl.textContent = file.name;
+    if (sizeEl) sizeEl.textContent = (file.size / 1024).toFixed(1) + ' KB';
+
+    const isPDF = file.type === 'application/pdf' || file.name.endsWith('.pdf');
+    if (iconEl) {
+      iconEl.innerHTML = isPDF
+        ? '<i class="fas fa-file-pdf text-red-600"></i>'
+        : '<i class="fas fa-file-image text-blue-500"></i>';
+      iconEl.className = `w-10 h-10 rounded-lg flex items-center justify-center ${isPDF ? 'bg-red-100' : 'bg-blue-100'}`;
+    }
+
+    // Preview de imagem
+    if (!isPDF && imgWrap && imgEl) {
+      imgWrap.classList.remove('hidden');
+      const reader = new FileReader();
+      reader.onload = (e) => { imgEl.src = e.target.result; };
+      reader.readAsDataURL(file);
+    } else if (imgWrap) {
+      imgWrap.classList.add('hidden');
+    }
+  },
+
+  clearFile() {
+    const input = document.getElementById('hg-file-input');
+    if (input) input.value = '';
+    document.getElementById('hg-file-preview')?.classList.add('hidden');
+    document.getElementById('hg-img-preview-wrap')?.classList.add('hidden');
+  },
+
+  async uploadAnalisar() {
+    const input = document.getElementById('hg-file-input');
+    const file  = input?.files?.[0];
+    if (!file) { showNotification('Selecione um arquivo primeiro.', 'warning'); return; }
+
+    const btn       = document.getElementById('hg-up-btn');
+    const resultado = document.getElementById('hg-up-resultado');
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analisando com GPT-5.2...'; }
+    if (resultado) resultado.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm p-8 text-center">
+        <i class="fas fa-spinner fa-spin text-red-500 text-3xl mb-3"></i>
+        <p class="text-gray-600 font-medium">Lendo laudo + GPT-5.2 interpretando...</p>
+        <p class="text-xs text-gray-400 mt-2">PDF: ~10s · Imagem: ~15–25s</p>
+      </div>`;
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const patientName = document.getElementById('hg-up-name')?.value?.trim();
+      const sexo  = document.getElementById('hg-up-sexo')?.value;
+      const idade = document.getElementById('hg-up-idade')?.value;
+      const mode  = document.getElementById('hg-up-mode')?.value || 'clinical';
+
+      if (patientName) formData.append('patientName', patientName);
+      if (sexo)        formData.append('sexo', sexo);
+      if (idade)       formData.append('idade', idade);
+      formData.append('mode', mode);
+
+      // Upload sem Content-Type (browser define multipart boundary)
+      const token = Auth.token;
+      const resp = await fetch('/api/ai/hemograma/upload', {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        body: formData,
+      });
+      const data = await resp.json();
+
+      if (!data.success) throw new Error(data.error || 'Erro no upload');
+
+      // Mostrar valores extraídos + resultado
+      const valores = data.valores_extraidos || {};
+      const camposFormatados = Object.entries(valores)
+        .filter(([k]) => !['sexo','idade'].includes(k))
+        .map(([k,v]) => `<span class="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-full border border-blue-100">
+          <span class="font-medium">${k}</span>: ${v}
+        </span>`).join('');
+
+      const valoresHtml = camposFormatados ? `
+        <div class="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-4">
+          <p class="text-xs font-bold text-blue-700 uppercase mb-2">
+            <i class="fas fa-magic mr-1"></i> Valores extraídos do laudo (${data.source === 'pdf_texto' ? 'PDF' : 'Imagem'})
+            ${data.patient_name_detected ? `· Paciente: <strong>${escapeHtml(data.patient_name_detected)}</strong>` : ''}
+          </p>
+          <div class="flex flex-wrap gap-2">${camposFormatados}</div>
+        </div>` : '';
+
+      if (resultado) resultado.innerHTML = valoresHtml;
+
+      // Renderizar resultado completo
+      this._renderResultado(data.data, data.patient_name_detected || patientName, mode, resultado);
+
+    } catch (err) {
+      if (resultado) resultado.innerHTML = `
+        <div class="bg-red-50 rounded-xl border border-red-200 p-6 text-red-700">
+          <i class="fas fa-exclamation-triangle mr-2"></i>
+          <strong>Erro:</strong> ${escapeHtml(err.message || 'Falha no upload')}
+          <p class="text-xs mt-2 text-red-500">Verifique se o arquivo é um laudo válido e tente novamente.</p>
+        </div>`;
+      showNotification('Erro ao processar laudo.', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-upload"></i> Enviar Laudo e Analisar com GPT-5.2'; }
+    }
+  },
+
+  renderManual() {
     const panel = document.getElementById('hemograma-panel');
     if (!panel) return;
 
@@ -1089,8 +1239,8 @@ const HemogramaSimulator = {
     }
   },
 
-  _renderResultado(data, patientName, mode) {
-    const resultado = document.getElementById('hg-resultado');
+  _renderResultado(data, patientName, mode, containerEl) {
+    const resultado = containerEl || document.getElementById('hg-resultado');
     if (!resultado) return;
 
     const ia     = data.relatorio_ia || {};
@@ -1308,25 +1458,41 @@ const HemogramaSimulator = {
   },
 
   limpar() {
-    const ids = [
-      'hg-patient-name','hg-sexo','hg-idade',
-      'hg-hemoglobina','hg-hematocrito','hg-eritrocitos','hg-vcm','hg-hcm','hg-chcm','hg-rdw',
-      'hg-leucocitos',
-      'hg-neutrofilos','hg-linfocitos','hg-monocitos','hg-eosinofilos','hg-basofilos','hg-bastoes',
-      'hg-plaquetas',
-    ];
-    ids.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.value = '';
-    });
-    const resultado = document.getElementById('hg-resultado');
-    if (resultado) resultado.innerHTML = `
-      <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
-        <div>
-          <i class="fas fa-microscope text-4xl mb-3 opacity-30"></i>
-          <p class="text-sm">Preencha os valores do hemograma<br>e clique em Analisar</p>
-        </div>
-      </div>`;
+    if (this.currentTab === 'upload') {
+      this.clearFile();
+      ['hg-up-name','hg-up-sexo','hg-up-idade'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      const res = document.getElementById('hg-up-resultado');
+      if (res) res.innerHTML = `
+        <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
+          <div>
+            <i class="fas fa-file-upload text-4xl mb-3 opacity-30"></i>
+            <p class="text-sm">Faça upload do laudo<br>para iniciar a análise</p>
+          </div>
+        </div>`;
+    } else {
+      const ids = [
+        'hg-patient-name','hg-sexo','hg-idade',
+        'hg-hemoglobina','hg-hematocrito','hg-eritrocitos','hg-vcm','hg-hcm','hg-chcm','hg-rdw',
+        'hg-leucocitos',
+        'hg-neutrofilos','hg-linfocitos','hg-monocitos','hg-eosinofilos','hg-basofilos','hg-bastoes',
+        'hg-plaquetas',
+      ];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      const resultado = document.getElementById('hg-resultado');
+      if (resultado) resultado.innerHTML = `
+        <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
+          <div>
+            <i class="fas fa-microscope text-4xl mb-3 opacity-30"></i>
+            <p class="text-sm">Preencha os valores do hemograma<br>e clique em Analisar</p>
+          </div>
+        </div>`;
+    }
   },
 };
 

@@ -19,7 +19,7 @@ professionalRoutes.get('/me/stats', async (c) => {
   const professionalId = getAuthProfessionalId(c);
   const { DB } = c.env;
 
-  const [patients, consultations, coursesProgress, professional] = await Promise.all([
+  const [patients, consultations, aiInteractions, professional] = await Promise.all([
     DB.prepare(
       'SELECT COUNT(*) as count FROM patients WHERE professional_id = ? AND is_active = 1'
     ).bind(professionalId).first<{ count: number }>(),
@@ -29,8 +29,8 @@ professionalRoutes.get('/me/stats', async (c) => {
     ).bind(professionalId).first<{ count: number }>(),
 
     DB.prepare(
-      'SELECT COUNT(*) as completed FROM course_progress WHERE professional_id = ? AND status = "concluido"'
-    ).bind(professionalId).first<{ completed: number }>(),
+      'SELECT COUNT(*) as count FROM ai_interactions WHERE professional_id = ?'
+    ).bind(professionalId).first<{ count: number }>(),
 
     DB.prepare(
       'SELECT xp_points, level, plan_type FROM professionals WHERE id = ?'
@@ -40,7 +40,7 @@ professionalRoutes.get('/me/stats', async (c) => {
   return c.json({
     total_patients: patients?.count ?? 0,
     total_consultations: consultations?.count ?? 0,
-    courses_completed: coursesProgress?.completed ?? 0,
+    ai_interactions_count: aiInteractions?.count ?? 0,
     xp_points: professional?.xp_points ?? 0,
     level: professional?.level ?? 1,
     plan_type: professional?.plan_type ?? 'free',
