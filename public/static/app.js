@@ -872,6 +872,464 @@ async function initApp() {
   await loadDashboardStats();
 }
 
+// ============================================================
+// HEMOGRAMA SIMULATOR — Simulador de Hemograma + FSA com IA
+// ============================================================
+const HemogramaSimulator = {
+
+  render() {
+    const panel = document.getElementById('hemograma-panel');
+    if (!panel) return;
+
+    panel.innerHTML = `
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- FORMULÁRIO -->
+        <div class="space-y-4">
+
+          <!-- Identificação do Paciente -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <h4 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <i class="fas fa-user-circle text-purple-500"></i> Identificação (opcional)
+            </h4>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Nome do Paciente</label>
+                <input type="text" id="hg-patient-name" placeholder="Ex: João Silva"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Sexo</label>
+                <select id="hg-sexo" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+                  <option value="">Não informado</option>
+                  <option value="F">Feminino</option>
+                  <option value="M">Masculino</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Idade (anos)</label>
+                <input type="number" id="hg-idade" placeholder="Ex: 35" min="0" max="120"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none">
+              </div>
+            </div>
+          </div>
+
+          <!-- Série Vermelha -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <h4 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <i class="fas fa-circle text-red-500 text-xs"></i>
+              Série Vermelha (Eritrograma)
+            </h4>
+            <div class="grid grid-cols-2 gap-3">
+              ${this._field('hg-hemoglobina',  'Hemoglobina',   'g/dL',      '13,0–17,5 / 12,0–16,0')}
+              ${this._field('hg-hematocrito',  'Hematócrito',   '%',         '39–54 / 36–48')}
+              ${this._field('hg-eritrocitos',  'Eritrócitos',   'milhões/µL','4,2–6,0 / 3,8–5,2')}
+              ${this._field('hg-vcm',          'VCM',           'fL',        '80–100')}
+              ${this._field('hg-hcm',          'HCM',           'pg',        '27–33')}
+              ${this._field('hg-chcm',         'CHCM',          'g/dL',      '32–36')}
+              ${this._field('hg-rdw',          'RDW',           '%',         '11,5–14,5')}
+            </div>
+          </div>
+
+          <!-- Leucograma -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <h4 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <i class="fas fa-circle text-blue-500 text-xs"></i>
+              Leucograma
+            </h4>
+            <div class="grid grid-cols-2 gap-3">
+              ${this._field('hg-leucocitos',  'Leucócitos Totais', '/µL',  '4.000–11.000')}
+            </div>
+          </div>
+
+          <!-- FSA -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <h4 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <i class="fas fa-circle text-blue-300 text-xs"></i>
+              FSA — Fórmula Sanguínea Ampliada (valores absolutos)
+            </h4>
+            <div class="grid grid-cols-2 gap-3">
+              ${this._field('hg-neutrofilos',  'Neutrófilos',    '/µL', '1.800–7.500')}
+              ${this._field('hg-linfocitos',   'Linfócitos',     '/µL', '1.000–4.500')}
+              ${this._field('hg-monocitos',    'Monócitos',      '/µL', '200–1.000')}
+              ${this._field('hg-eosinofilos',  'Eosinófilos',    '/µL', '50–500')}
+              ${this._field('hg-basofilos',    'Basófilos',      '/µL', '0–100')}
+              ${this._field('hg-bastoes',      'Bastões',        '/µL', '< 500')}
+            </div>
+          </div>
+
+          <!-- Plaquetas -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <h4 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+              <i class="fas fa-circle text-yellow-500 text-xs"></i>
+              Plaquetas
+            </h4>
+            <div class="grid grid-cols-2 gap-3">
+              ${this._field('hg-plaquetas', 'Plaquetas', '/µL', '150.000–400.000')}
+            </div>
+          </div>
+
+          <!-- Modo e Botão -->
+          <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <div class="flex items-center gap-3 mb-4">
+              <label class="block text-sm font-medium text-gray-700">Modo de relatório:</label>
+              <select id="hg-mode" class="border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                <option value="clinical">🩺 Clínico (profissional)</option>
+                <option value="patient">👤 Paciente (linguagem simples)</option>
+              </select>
+            </div>
+            <button onclick="HemogramaSimulator.analisar()"
+              id="hg-btn-analisar"
+              class="w-full bg-gradient-to-r from-red-600 to-red-500 text-white font-semibold py-3 rounded-xl
+                     hover:from-red-700 hover:to-red-600 transition-all flex items-center justify-center gap-2">
+              <i class="fas fa-microscope"></i>
+              Analisar Hemograma com IA (GPT-5.2)
+            </button>
+          </div>
+        </div>
+
+        <!-- RESULTADO -->
+        <div id="hg-resultado" class="space-y-4">
+          <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
+            <div>
+              <i class="fas fa-microscope text-4xl mb-3 opacity-30"></i>
+              <p class="text-sm">Preencha os valores do hemograma<br>e clique em Analisar</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    `;
+  },
+
+  _field(id, label, unit, ref) {
+    return `
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">
+          ${label} <span class="text-gray-400">(${unit})</span>
+        </label>
+        <input type="number" id="${id}" step="any" placeholder="${ref}"
+          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-red-400 focus:outline-none"
+          title="Referência: ${ref}">
+      </div>`;
+  },
+
+  _val(id) {
+    const el = document.getElementById(id);
+    if (!el) return undefined;
+    const v = parseFloat(el.value);
+    return isNaN(v) ? undefined : v;
+  },
+
+  async analisar() {
+    const payload = {
+      hemoglobina:  this._val('hg-hemoglobina'),
+      hematocrito:  this._val('hg-hematocrito'),
+      eritrocitos:  this._val('hg-eritrocitos'),
+      vcm:          this._val('hg-vcm'),
+      hcm:          this._val('hg-hcm'),
+      chcm:         this._val('hg-chcm'),
+      rdw:          this._val('hg-rdw'),
+      leucocitos:   this._val('hg-leucocitos'),
+      neutrofilos:  this._val('hg-neutrofilos'),
+      linfocitos:   this._val('hg-linfocitos'),
+      monocitos:    this._val('hg-monocitos'),
+      eosinofilos:  this._val('hg-eosinofilos'),
+      basofilos:    this._val('hg-basofilos'),
+      bastoes:      this._val('hg-bastoes'),
+      plaquetas:    this._val('hg-plaquetas'),
+    };
+
+    const sexo  = document.getElementById('hg-sexo')?.value || undefined;
+    const idade = this._val('hg-idade');
+    const mode  = document.getElementById('hg-mode')?.value || 'clinical';
+    const patientName = document.getElementById('hg-patient-name')?.value?.trim() || undefined;
+
+    if (sexo)  payload.sexo  = sexo;
+    if (idade) payload.idade = idade;
+    if (patientName) payload.patientName = patientName;
+    payload.mode = mode;
+
+    // Verificar se ao menos 1 campo foi preenchido
+    const temDados = Object.values(payload).some(
+      (v) => typeof v === 'number' && !isNaN(v)
+    );
+    if (!temDados) {
+      showNotification('Preencha pelo menos um parâmetro do hemograma.', 'warning');
+      return;
+    }
+
+    // Loading state
+    const btn = document.getElementById('hg-btn-analisar');
+    const resultado = document.getElementById('hg-resultado');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analisando com GPT-5.2...'; }
+    if (resultado) resultado.innerHTML = `
+      <div class="bg-white rounded-xl shadow-sm p-8 text-center">
+        <i class="fas fa-spinner fa-spin text-red-500 text-3xl mb-3"></i>
+        <p class="text-gray-600">Consultando motor hematológico + GPT-5.2...</p>
+        <p class="text-xs text-gray-400 mt-1">Aguarde ~15–20 segundos</p>
+      </div>`;
+
+    try {
+      const data = await apiFetch('/ai/hemograma', { method: 'POST', body: JSON.stringify(payload) });
+      if (data.success) {
+        this._renderResultado(data.data, patientName, mode);
+      } else {
+        throw new Error(data.error || 'Erro ao analisar');
+      }
+    } catch (err) {
+      if (resultado) resultado.innerHTML = `
+        <div class="bg-red-50 rounded-xl border border-red-200 p-6 text-red-700">
+          <i class="fas fa-exclamation-triangle mr-2"></i>
+          <strong>Erro:</strong> ${escapeHtml(err.message || 'Falha na análise')}
+        </div>`;
+      showNotification('Erro ao analisar hemograma.', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-microscope"></i> Analisar Hemograma com IA (GPT-5.2)'; }
+    }
+  },
+
+  _renderResultado(data, patientName, mode) {
+    const resultado = document.getElementById('hg-resultado');
+    if (!resultado) return;
+
+    const ia     = data.relatorio_ia || {};
+    const score  = data.score_global ?? 0;
+    const scoreColor = score >= 80 ? 'green' : score >= 50 ? 'yellow' : 'red';
+    const scoreLabel = score >= 80 ? 'Ótimo' : score >= 50 ? 'Atenção' : 'Alterado';
+
+    // Alertas críticos
+    const alertasCriticos = (data.alertas_criticos || []).length > 0
+      ? `<div class="bg-red-50 border border-red-300 rounded-xl p-4 mb-4">
+          <h5 class="font-bold text-red-700 flex items-center gap-2 mb-2">
+            <i class="fas fa-exclamation-triangle"></i> ⚠️ ALERTAS CRÍTICOS
+          </h5>
+          <ul class="space-y-1">
+            ${(data.alertas_criticos || []).map(a => `<li class="text-red-700 text-sm font-medium">${escapeHtml(a)}</li>`).join('')}
+          </ul>
+        </div>` : '';
+
+    // Padrões diagnósticos
+    const padroesHtml = (data.padroes || []).length > 0
+      ? `<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-4">
+          <h5 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+            <i class="fas fa-search text-purple-500"></i> Padrões Diagnósticos Detectados
+          </h5>
+          <div class="space-y-2">
+            ${(data.padroes || []).map(p => `
+              <div class="bg-purple-50 rounded-lg p-3 border border-purple-100">
+                <p class="font-semibold text-purple-800 text-sm">${escapeHtml(p.nome)}</p>
+                <p class="text-xs text-purple-600 mt-1">${escapeHtml(p.descricao)}</p>
+                <span class="inline-block mt-1 text-xs bg-purple-200 text-purple-700 px-2 py-0.5 rounded-full">
+                  Confiança: ${escapeHtml(p.confianca)}
+                </span>
+              </div>`).join('')}
+          </div>
+        </div>` : '';
+
+    // Achados por série
+    const categorias = ['serie_vermelha', 'indices', 'leucograma', 'fsa', 'plaquetas'];
+    const catLabels  = {
+      serie_vermelha: '🔴 Série Vermelha',
+      indices:        '📊 Índices Hematimétricos',
+      leucograma:     '⚪ Leucograma',
+      fsa:            '🔵 FSA — Fórmula Sanguínea Ampliada',
+      plaquetas:      '🟡 Plaquetas',
+    };
+    const statusColor = {
+      ok:         'bg-green-50 border-green-200 text-green-800',
+      borderline: 'bg-yellow-50 border-yellow-200 text-yellow-800',
+      low:        'bg-orange-50 border-orange-200 text-orange-800',
+      high:       'bg-red-50 border-red-200 text-red-800',
+      critical:   'bg-red-100 border-red-400 text-red-900',
+    };
+    const statusIcon = {
+      ok:         '✅',
+      borderline: '🟡',
+      low:        '⬇️',
+      high:       '⬆️',
+      critical:   '🚨',
+    };
+
+    let achadosHtml = '';
+    for (const cat of categorias) {
+      const grupo = (data.achados || []).filter(a => a.categoria === cat);
+      if (grupo.length === 0) continue;
+      achadosHtml += `
+        <div class="mb-3">
+          <h6 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">${catLabels[cat]}</h6>
+          <div class="space-y-2">
+            ${grupo.map(a => `
+              <div class="flex items-start gap-3 p-3 rounded-lg border text-sm ${statusColor[a.status] || 'bg-gray-50'}">
+                <span class="text-base">${statusIcon[a.status] || '○'}</span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-semibold">${escapeHtml(a.parametro)}</span>
+                    <span class="font-mono text-xs bg-white bg-opacity-60 px-2 py-0.5 rounded">
+                      ${a.valor} ${escapeHtml(a.unidade)}
+                    </span>
+                    <span class="text-xs opacity-70">Ref: ${escapeHtml(a.referencia)}</span>
+                  </div>
+                  <p class="mt-1 text-xs opacity-80">${escapeHtml(a.interpretacao)}</p>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>`;
+    }
+
+    // Relatório IA
+    const relatorioHtml = ia.resumo_executivo ? `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-4">
+        <div class="flex items-center justify-between mb-3">
+          <h5 class="font-semibold text-gray-800 flex items-center gap-2">
+            <i class="fas fa-robot text-purple-500"></i>
+            Interpretação por GPT-5.2
+          </h5>
+          <span class="text-xs ${ia.generated_by === 'openai' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'} px-2 py-1 rounded-full">
+            ${ia.generated_by === 'openai' ? `✅ OpenAI ${ia.model || ''}` : '⚙️ Motor local'}
+            ${ia.response_time_ms ? ` · ${(ia.response_time_ms/1000).toFixed(1)}s` : ''}
+          </span>
+        </div>
+
+        <div class="bg-blue-50 rounded-lg p-4 mb-4 border border-blue-100">
+          <h6 class="text-xs font-bold text-blue-700 uppercase mb-2">Resumo Executivo</h6>
+          <p class="text-sm text-blue-900">${escapeHtml(ia.resumo_executivo || '')}</p>
+        </div>
+
+        ${ia.interpretacao_series?.length > 0 ? `
+          <div class="mb-4">
+            <h6 class="text-xs font-bold text-gray-600 uppercase mb-2">Interpretação por Série</h6>
+            <ul class="space-y-1">
+              ${ia.interpretacao_series.map(l => `<li class="text-sm text-gray-700 flex gap-2"><span class="text-purple-400">▸</span>${escapeHtml(l)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+
+        ${ia.padroes_diagnosticos?.length > 0 ? `
+          <div class="mb-4">
+            <h6 class="text-xs font-bold text-gray-600 uppercase mb-2">Padrões Diagnósticos</h6>
+            <ul class="space-y-1">
+              ${ia.padroes_diagnosticos.map(l => `<li class="text-sm text-gray-700 flex gap-2"><span class="text-orange-400">▸</span>${escapeHtml(l)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+
+        ${ia.diagnosticos_diferenciais?.length > 0 ? `
+          <div class="mb-4">
+            <h6 class="text-xs font-bold text-gray-600 uppercase mb-2">Diagnósticos Diferenciais</h6>
+            <ul class="space-y-1">
+              ${ia.diagnosticos_diferenciais.map(l => `<li class="text-sm text-gray-700 flex gap-2"><span class="text-red-400">▸</span>${escapeHtml(l)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+
+        ${ia.investigacao_recomendada?.length > 0 ? `
+          <div class="mb-4">
+            <h6 class="text-xs font-bold text-gray-600 uppercase mb-2">Investigação Recomendada</h6>
+            <ul class="space-y-1">
+              ${ia.investigacao_recomendada.map(l => `<li class="text-sm text-gray-700 flex gap-2"><span class="text-green-500">▸</span>${escapeHtml(l)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+
+        ${mode === 'patient' && ia.explicacao_paciente ? `
+          <div class="bg-green-50 rounded-lg p-4 mb-3 border border-green-100">
+            <h6 class="text-xs font-bold text-green-700 uppercase mb-2">Explicação para o Paciente</h6>
+            <p class="text-sm text-green-900">${escapeHtml(ia.explicacao_paciente)}</p>
+          </div>` : ''}
+
+        ${ia.aviso ? `
+          <div class="bg-yellow-50 rounded-lg p-3 border border-yellow-100 text-xs text-yellow-700">
+            ${escapeHtml(ia.aviso)}
+          </div>` : ''}
+      </div>` : '';
+
+    // Sugestões clínicas
+    const priorColors = {
+      urgente: 'bg-red-600 text-white',
+      alta:    'bg-orange-500 text-white',
+      media:   'bg-yellow-400 text-gray-900',
+      baixa:   'bg-gray-200 text-gray-700',
+    };
+    const sugestoesHtml = (data.sugestoes || []).length > 0 ? `
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-4">
+        <h5 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+          <i class="fas fa-clipboard-list text-blue-500"></i> Condutas Sugeridas
+        </h5>
+        <div class="space-y-2">
+          ${(data.sugestoes || []).map(s => `
+            <div class="flex items-start gap-3 p-3 rounded-lg bg-gray-50 border border-gray-100">
+              <span class="text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap ${priorColors[s.prioridade] || 'bg-gray-200'}">
+                ${(s.prioridade || '').toUpperCase()}
+              </span>
+              <div>
+                <p class="text-sm font-semibold text-gray-800">${escapeHtml(s.titulo)}</p>
+                <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(s.detalhe)}</p>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    resultado.innerHTML = `
+      <!-- Score -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm text-gray-500">Score Hematológico</p>
+            ${patientName ? `<p class="text-xs text-gray-400">${escapeHtml(patientName)}</p>` : ''}
+          </div>
+          <div class="text-right">
+            <div class="text-3xl font-bold text-${scoreColor}-600">${score}<span class="text-lg text-gray-400">/100</span></div>
+            <div class="text-xs font-medium text-${scoreColor}-600 uppercase">${scoreLabel}</div>
+          </div>
+        </div>
+        <div class="mt-3 h-2 bg-gray-100 rounded-full overflow-hidden">
+          <div class="h-full bg-${scoreColor}-500 rounded-full transition-all duration-700" style="width:${score}%"></div>
+        </div>
+        <p class="text-xs text-gray-400 mt-2">${data.parametros_analisados || 0} parâmetro(s) analisado(s)</p>
+      </div>
+
+      ${alertasCriticos}
+      ${padroesHtml}
+      ${relatorioHtml}
+
+      <!-- Achados -->
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5 mb-4">
+        <h5 class="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+          <i class="fas fa-list-alt text-red-500"></i> Achados por Série
+        </h5>
+        ${achadosHtml || '<p class="text-sm text-gray-400">Nenhum parâmetro analisado.</p>'}
+      </div>
+
+      ${sugestoesHtml}
+
+      <!-- Botão nova análise -->
+      <button onclick="HemogramaSimulator.limpar()"
+        class="w-full mt-2 border border-gray-200 text-gray-600 font-medium py-2 rounded-xl hover:bg-gray-50 text-sm transition">
+        <i class="fas fa-redo mr-2"></i>Nova Análise
+      </button>
+    `;
+  },
+
+  limpar() {
+    const ids = [
+      'hg-patient-name','hg-sexo','hg-idade',
+      'hg-hemoglobina','hg-hematocrito','hg-eritrocitos','hg-vcm','hg-hcm','hg-chcm','hg-rdw',
+      'hg-leucocitos',
+      'hg-neutrofilos','hg-linfocitos','hg-monocitos','hg-eosinofilos','hg-basofilos','hg-bastoes',
+      'hg-plaquetas',
+    ];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    const resultado = document.getElementById('hg-resultado');
+    if (resultado) resultado.innerHTML = `
+      <div class="bg-gray-50 rounded-xl border border-dashed border-gray-200 p-8 text-center text-gray-400 h-full flex items-center justify-center">
+        <div>
+          <i class="fas fa-microscope text-4xl mb-3 opacity-30"></i>
+          <p class="text-sm">Preencha os valores do hemograma<br>e clique em Analisar</p>
+        </div>
+      </div>`;
+  },
+};
+
 // Iniciar quando DOM estiver pronto
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initApp);

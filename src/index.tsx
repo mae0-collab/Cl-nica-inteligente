@@ -437,6 +437,9 @@ function buildDashboardPage(): string {
         <a onclick="showView('ai'); AIReport.renderPanel()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-ai">
           <i class="fas fa-robot mr-3"></i>Assistente IA
         </a>
+        <a onclick="showView('hemograma'); HemogramaSimulator.render()" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer" id="nav-hemograma">
+          <i class="fas fa-tint mr-3"></i>Hemograma / FSA
+        </a>
         <a href="/marketplace" class="nav-link flex items-center p-3 rounded-lg mb-2 hover:bg-purple-700 cursor-pointer">
           <i class="fas fa-store mr-3"></i>Marketplace
         </a>
@@ -603,6 +606,23 @@ function buildDashboardPage(): string {
       </div>
     </div>
   </div>
+
+      <!-- VIEW: Hemograma / FSA Simulator -->
+      <div id="view-hemograma" class="view-section p-6 hidden">
+        <div class="max-w-5xl mx-auto">
+          <div class="flex items-center gap-3 mb-6">
+            <div class="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+              <i class="fas fa-tint text-red-600 text-lg"></i>
+            </div>
+            <div>
+              <h3 class="text-xl font-bold text-gray-900">Simulador de Hemograma / FSA</h3>
+              <p class="text-sm text-gray-500">Interpretação clínica com IA — Série Vermelha, Leucograma e Fórmula Sanguínea Ampliada</p>
+            </div>
+          </div>
+          <!-- Painel injetado pelo HemogramaSimulator.render() -->
+          <div id="hemograma-panel"></div>
+        </div>
+      </div>
 
   <!-- Modal: Novo Paciente -->
   <div id="modal-patient" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

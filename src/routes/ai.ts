@@ -27,6 +27,15 @@ import {
 } from '../modules/ai/prompts'
 import type { AIReportOutput } from '../modules/clinical-intelligence/types'
 
+// ── Módulo Hemograma ────────────────────────────────────────
+import { analisarHemograma } from '../modules/hemograma/engine'
+import {
+  buildHemogramaSystemPrompt,
+  buildHemogramaUserContent,
+  HEMOGRAMA_REPORT_JSON_SCHEMA,
+} from '../modules/hemograma/prompts'
+import type { HemogramaReportOutput } from '../modules/hemograma/prompts'
+
 const aiRoutes = new Hono<AppEnv>()
 aiRoutes.use('*', authMiddleware)
 
@@ -424,6 +433,195 @@ function buildMockResponse(prompt: string, contextType: string): string {
   }
 
   return responses[contextType] ?? responses['general_question']
+}
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/ai/hemograma — Simulador FSA / Hemograma Completo
+// ─────────────────────────────────────────────────────────────
+const HemogramaSchema = z.object({
+  // Série Vermelha
+  hematocrito:  z.number().min(0).max(100).optional(),
+  hemoglobina:  z.number().min(0).max(30).optional(),
+  eritrocitos:  z.number().min(0).max(12).optional(),
+  vcm:          z.number().min(50).max(150).optional(),
+  hcm:          z.number().min(10).max(50).optional(),
+  chcm:         z.number().min(20).max(45).optional(),
+  rdw:          z.number().min(5).max(30).optional(),
+  // Leucograma
+  leucocitos:   z.number().min(0).max(200000).optional(),
+  // FSA (absolutos)
+  neutrofilos:  z.number().min(0).max(100000).optional(),
+  linfocitos:   z.number().min(0).max(100000).optional(),
+  monocitos:    z.number().min(0).max(20000).optional(),
+  eosinofilos:  z.number().min(0).max(50000).optional(),
+  basofilos:    z.number().min(0).max(5000).optional(),
+  bastoes:      z.number().min(0).max(50000).optional(),
+  // Plaquetas
+  plaquetas:    z.number().min(0).max(3000000).optional(),
+  // Contexto
+  sexo:         z.enum(['M', 'F']).optional(),
+  idade:        z.number().min(0).max(120).optional(),
+  patientName:  z.string().max(120).optional(),
+  mode:         z.enum(['clinical', 'patient']).default('clinical'),
+}).refine(
+  (d) => {
+    const campos = [
+      d.hematocrito, d.hemoglobina, d.eritrocitos, d.vcm, d.hcm, d.chcm, d.rdw,
+      d.leucocitos, d.neutrofilos, d.linfocitos, d.monocitos, d.eosinofilos, d.basofilos, d.bastoes,
+      d.plaquetas,
+    ]
+    return campos.some((v) => v !== undefined)
+  },
+  { message: 'Forneça pelo menos um parâmetro do hemograma' }
+)
+
+aiRoutes.post('/hemograma', async (c) => {
+  const professionalId = getAuthProfessionalId(c)
+  const { DB, OPENAI_API_KEY, OPENAI_MODEL } = c.env
+
+  const body = await c.req.json().catch(() => null)
+  if (!body) return c.json({ success: false, error: 'Corpo inválido' }, 400)
+
+  const validation = HemogramaSchema.safeParse(body)
+  if (!validation.success) {
+    return c.json({
+      success: false,
+      error:   'Dados inválidos',
+      details: validation.error.flatten().fieldErrors,
+    }, 400)
+  }
+
+  const { patientName, mode, ...hemogramaInput } = validation.data
+  const startTime = Date.now()
+
+  // ── 1. Motor de regras hematológicas ──────────────────────
+  const resultado = analisarHemograma(hemogramaInput)
+
+  // ── 2. Gerar relatório com IA ──────────────────────────────
+  const model = OPENAI_MODEL ?? 'gpt-5.2'
+  let relatorioIA: HemogramaReportOutput
+  let generatedBy: 'openai' | 'local' = 'local'
+  let tokensUsed = 0
+
+  if (OPENAI_API_KEY) {
+    try {
+      const systemPrompt = buildHemogramaSystemPrompt(mode)
+      const userContent  = buildHemogramaUserContent(hemogramaInput, resultado, patientName, mode)
+
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method:  'POST',
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          max_completion_tokens: 1500,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user',   content: userContent  },
+          ],
+          response_format: {
+            type:        'json_schema',
+            json_schema: {
+              name:   'hemograma_report',
+              strict: true,
+              schema: HEMOGRAMA_REPORT_JSON_SCHEMA,
+            },
+          },
+        }),
+      })
+
+      if (!res.ok) throw new Error(`OpenAI error ${res.status}: ${await res.text()}`)
+
+      const data    = await res.json() as any
+      const raw     = data.choices?.[0]?.message?.content ?? ''
+      if (!raw) throw new Error('Resposta vazia')
+
+      relatorioIA = JSON.parse(raw) as HemogramaReportOutput
+      tokensUsed  = data.usage?.total_tokens ?? 0
+      generatedBy = 'openai'
+    } catch (err) {
+      console.error('[hemograma] OpenAI error:', err)
+      // Fallback local
+      relatorioIA = buildLocalHemogramaReport(resultado, mode)
+    }
+  } else {
+    relatorioIA = buildLocalHemogramaReport(resultado, mode)
+  }
+
+  const responseTimeMs = Date.now() - startTime
+
+  // ── 3. Salvar interação ────────────────────────────────────
+  try {
+    await DB.prepare(`
+      INSERT INTO ai_interactions
+        (professional_id, context_type, input_summary, output_summary, model_used, tokens_used, response_time_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).bind(
+      professionalId,
+      'hemograma_interpretation',
+      JSON.stringify({ parametros: resultado.parametrosAnalisados, score: resultado.scoreGlobal }),
+      relatorioIA.resumo_executivo.slice(0, 500),
+      generatedBy === 'openai' ? model : 'local',
+      tokensUsed,
+      responseTimeMs,
+    ).run()
+  } catch { /* não bloquear resposta por erro de log */ }
+
+  return c.json({
+    success: true,
+    data: {
+      score_global:          resultado.scoreGlobal,
+      parametros_analisados: resultado.parametrosAnalisados,
+      achados:               resultado.achados,
+      padroes:               resultado.padroes,
+      sugestoes:             resultado.sugestoes,
+      alertas_criticos:      resultado.alertasCriticos,
+      alertas_combinados:    resultado.alertasCombinados,
+      relatorio_ia: {
+        generated_by:    generatedBy,
+        model:           generatedBy === 'openai' ? model : null,
+        response_time_ms: responseTimeMs,
+        tokens_used:     tokensUsed,
+        ...relatorioIA,
+      },
+    },
+  })
+})
+
+// ── Fallback local para hemograma ────────────────────────────
+function buildLocalHemogramaReport(
+  resultado: ReturnType<typeof analisarHemograma>,
+  mode: 'clinical' | 'patient',
+): HemogramaReportOutput {
+  const alterados = resultado.achados.filter((a) => a.status !== 'ok')
+  const criticos  = resultado.achados.filter((a) => a.status === 'critical')
+
+  const resumo = criticos.length > 0
+    ? `⚠️ ATENÇÃO: ${criticos.length} parâmetro(s) em valores críticos. ${alterados.length} alteração(ões) total detectada(s) no hemograma.`
+    : alterados.length > 0
+      ? `Hemograma com ${alterados.length} alteração(ões). Score geral: ${resultado.scoreGlobal}/100.`
+      : `Hemograma sem alterações significativas. Score: ${resultado.scoreGlobal}/100.`
+
+  return {
+    resumo_executivo: resumo,
+    interpretacao_series: resultado.resumoTexto.length > 0
+      ? resultado.resumoTexto
+      : ['Parâmetros dentro dos valores de referência.'],
+    padroes_diagnosticos: resultado.padroes.length > 0
+      ? resultado.padroes.map((p) => `${p.nome}: ${p.descricao}`)
+      : ['Nenhum padrão diagnóstico combinado detectado.'],
+    diagnosticos_diferenciais: alterados.length > 0
+      ? alterados.map((a) => `${a.parametro}: ${a.interpretacao}`)
+      : ['Sem alterações para diagnóstico diferencial.'],
+    investigacao_recomendada: resultado.sugestoes.slice(0, 5).map((s) => `${s.titulo}: ${s.detalhe}`),
+    explicacao_paciente: mode === 'patient'
+      ? `Seu hemograma foi analisado. ${alterados.length > 0 ? `Foram encontrados ${alterados.length} ponto(s) que seu médico irá avaliar com você.` : 'Os resultados estão dentro dos valores esperados.'} Sempre consulte seu profissional de saúde para a interpretação completa.`
+      : `Relatório gerado pelo motor clínico local. Configure OPENAI_API_KEY para interpretação com ${model ?? 'gpt-5.2'}.`,
+    aviso: '⚠️ Este relatório é uma ferramenta de apoio à decisão clínica. Não substitui avaliação médica individualizada.',
+  }
 }
 
 export default aiRoutes
